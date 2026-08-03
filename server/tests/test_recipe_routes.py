@@ -236,3 +236,92 @@ class TestCreateRecipesBatch:
         assert response.status_code == 400
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "EMPTY_REQUEST"
+
+
+from src.models.models import UpdateRecipeRequest
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestUpdateRecipe:
+    """Tests for PATCH /api/recipes/{id} endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_update_recipe_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.matched_count = 1
+        mock_collection.update_one.return_value = mock_result
+        mock_collection.find_one.return_value = {"_id": ObjectId(TEST_RECIPE_ID), "title": "Updated"}
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import update_recipe
+        result = await update_recipe(UpdateRecipeRequest(title="Updated"), recipe_id=TEST_RECIPE_ID)
+
+        assert result.success is True
+        assert result.data["title"] == "Updated"
+
+    async def test_update_recipe_no_fields_provided(self):
+        from src.routers.recipes import update_recipe
+        response = await update_recipe(UpdateRecipeRequest(), recipe_id=TEST_RECIPE_ID)
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "NO_UPDATE_DATA"
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_update_recipe_not_found(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.matched_count = 0
+        mock_collection.update_one.return_value = mock_result
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import update_recipe
+        response = await update_recipe(UpdateRecipeRequest(title="Updated"), recipe_id=TEST_RECIPE_ID)
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 404
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "RECIPE_NOT_FOUND"
+
+    async def test_update_recipe_invalid_id(self):
+        from src.routers.recipes import update_recipe
+        response = await update_recipe(UpdateRecipeRequest(title="Updated"), recipe_id=INVALID_RECIPE_ID)
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_OBJECT_ID"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestUpdateRecipesBatch:
+    """Tests for PATCH /api/recipes/ endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_update_recipes_batch_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.matched_count = 3
+        mock_result.modified_count = 3
+        mock_collection.update_many.return_value = mock_result
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import update_recipes_batch
+        result = await update_recipes_batch({"filter": {"cuisine": "Italian"}, "update": {"difficulty": "easy"}})
+
+        assert result.success is True
+        assert result.data["matchedCount"] == 3
+        assert result.data["modifiedCount"] == 3
+
+    async def test_update_recipes_batch_missing_filter(self):
+        from src.routers.recipes import update_recipes_batch
+        response = await update_recipes_batch({"update": {"difficulty": "easy"}})
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "MISSING_FILTER"

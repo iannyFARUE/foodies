@@ -1,11 +1,16 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
 from typing import List
 from src.database.mongo_client import get_collection
-from src.models.models import Recipe, CreateRecipeRequest, SuccessResponse
+from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
-from src.utils.response_docs import OBJECTID_VALIDATION_RESPONSES, DATABASE_OPERATION_RESPONSES, CRUD_OPERATION_RESPONSES
+from src.utils.response_docs import (
+    OBJECTID_VALIDATION_RESPONSES,
+    DATABASE_OPERATION_RESPONSES,
+    CRUD_OPERATION_RESPONSES,
+    CRUD_WITH_OBJECTID_RESPONSES,
+)
 from bson import ObjectId, errors
 
 router = APIRouter()
@@ -175,3 +180,97 @@ async def create_recipes_batch(recipes: List[CreateRecipeRequest]) -> SuccessRes
         "insertedCount": len(result.inserted_ids),
         "insertedIds": [str(_id) for _id in result.inserted_ids]
     }, f"Successfully created {len(result.inserted_ids)} recipes.")
+
+
+@router.patch(
+    "/{id}",
+    response_model=SuccessResponse[Recipe],
+    status_code=200,
+    summary="Update a single recipe by its ID.",
+    responses=CRUD_WITH_OBJECTID_RESPONSES
+)
+async def update_recipe(
+    recipe_data: UpdateRecipeRequest,
+    recipe_id: str = Path(..., alias="id")
+) -> SuccessResponse[Recipe]:
+    recipes_collection = get_collection("recipes")
+
+    try:
+        recipe_id = ObjectId(recipe_id)
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid recipe_id format: {recipe_id}",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    update_dict = recipe_data.model_dump(exclude_unset=True, exclude_none=True)
+    if not update_dict:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="No valid fields provided for update.",
+                code="NO_UPDATE_DATA"
+            )
+        )
+
+    try:
+        result = await recipes_collection.update_one({"_id": recipe_id}, {"$set": update_dict})
+    except Exception:
+        return server_error_response(
+            "An error occurred while updating the recipe.",
+            "DATABASE_ERROR",
+            log_context="update_recipe",
+        )
+
+    if result.matched_count == 0:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe with that _id was found: {recipe_id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    updated_recipe = await recipes_collection.find_one({"_id": recipe_id})
+    updated_recipe["_id"] = str(updated_recipe["_id"])
+    return create_success_response(updated_recipe, f"Recipe updated successfully. Modified {len(update_dict)} fields.")
+
+
+@router.patch(
+    "/",
+    response_model=SuccessResponse[dict],
+    status_code=200,
+    summary="Batch update recipes matching the given filter.",
+    responses=CRUD_OPERATION_RESPONSES
+)
+async def update_recipes_batch(request_body: dict = Body(...)) -> SuccessResponse[dict]:
+    recipes_collection = get_collection("recipes")
+
+    filter_data = request_body.get("filter", {})
+    update_data = request_body.get("update", {})
+
+    if not filter_data or not update_data:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="Both filter and update objects are required",
+                code="MISSING_FILTER"
+            )
+        )
+
+    try:
+        result = await recipes_collection.update_many(filter_data, {"$set": update_data})
+    except Exception:
+        return server_error_response(
+            "An error occurred while updating recipes.",
+            "DATABASE_ERROR",
+            log_context="update_recipes_batch",
+        )
+
+    return create_success_response({
+        "matchedCount": result.matched_count,
+        "modifiedCount": result.modified_count
+    }, f"Update operation completed. Matched {result.matched_count} recipe(s), modified {result.modified_count} recipe(s).")
