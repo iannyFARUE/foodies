@@ -72,3 +72,95 @@ class TestGetRecipeById:
         assert response.status_code == 500
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "DATABASE_ERROR"
+
+
+class _AsyncCursorStub:
+    """
+    Minimal stand-in for a pymongo cursor: .sort()/.skip()/.limit() are
+    synchronous chain calls (like the real driver), but iteration is async.
+    Deliberately not a MagicMock — configuring __aiter__/__anext__ on Mock
+    objects to behave correctly is version-sensitive, so a small real class
+    is the reliable way to fake this protocol.
+    """
+
+    def __init__(self, items):
+        self._iter = iter(items)
+
+    def sort(self, *args, **kwargs):
+        return self
+
+    def skip(self, *args, **kwargs):
+        return self
+
+    def limit(self, *args, **kwargs):
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestGetAllRecipes:
+    """Tests for GET /api/recipes/ endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_get_all_recipes_returns_list(self, mock_get_collection):
+        mock_collection = MagicMock()
+        recipes = [
+            {"_id": ObjectId(TEST_RECIPE_ID), "title": "Recipe A", "cuisine": "Italian"},
+            {"_id": ObjectId("507f1f77bcf86cd799439012"), "title": "Recipe B", "cuisine": "Mexican"},
+        ]
+        mock_collection.find.return_value = _AsyncCursorStub(recipes)
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_all_recipes
+        result = await get_all_recipes()
+
+        assert result.success is True
+        assert len(result.data) == 2
+        assert result.data[0]["_id"] == TEST_RECIPE_ID
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_get_all_recipes_applies_cuisine_filter(self, mock_get_collection):
+        mock_collection = MagicMock()
+        mock_collection.find.return_value = _AsyncCursorStub([])
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_all_recipes
+        await get_all_recipes(cuisine="Italian")
+
+        called_filter = mock_collection.find.call_args[0][0]
+        assert called_filter["cuisine"] == {"$regex": "Italian", "$options": "i"}
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_get_all_recipes_applies_min_rating_filter(self, mock_get_collection):
+        mock_collection = MagicMock()
+        mock_collection.find.return_value = _AsyncCursorStub([])
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_all_recipes
+        await get_all_recipes(min_rating=4.0)
+
+        called_filter = mock_collection.find.call_args[0][0]
+        assert called_filter["averageRating"] == {"$gte": 4.0}
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_get_all_recipes_database_error(self, mock_get_collection):
+        mock_collection = MagicMock()
+        mock_collection.find.side_effect = Exception("boom")
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_all_recipes
+        response = await get_all_recipes()
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 500
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "DATABASE_ERROR"

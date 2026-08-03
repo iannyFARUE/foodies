@@ -1,10 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
+from typing import List
 from src.database.mongo_client import get_collection
 from src.models.models import Recipe, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
-from src.utils.response_docs import OBJECTID_VALIDATION_RESPONSES
+from src.utils.response_docs import OBJECTID_VALIDATION_RESPONSES, DATABASE_OPERATION_RESPONSES
 from bson import ObjectId, errors
 
 router = APIRouter()
@@ -50,3 +51,50 @@ async def get_recipe_by_id(id: str):
 
     recipe["_id"] = str(recipe["_id"])
     return create_success_response(recipe, "Recipe retrieved successfully")
+
+
+@router.get(
+    "/",
+    response_model=SuccessResponse[List[Recipe]],
+    status_code=200,
+    summary="Retrieve a list of recipes with optional filtering, sorting, and pagination.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def get_all_recipes(
+    cuisine: str = Query(default=None),
+    difficulty: str = Query(default=None),
+    max_prep_time: int = Query(default=None, alias="maxPrepTime"),
+    min_rating: float = Query(default=None, alias="minRating"),
+    limit: int = Query(default=20, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+    sort_by: str = Query(default="title", alias="sortBy"),
+    sort_order: str = Query(default="asc", alias="sortOrder")
+):
+    recipes_collection = get_collection("recipes")
+    filter_dict = {}
+    if cuisine:
+        filter_dict["cuisine"] = {"$regex": cuisine, "$options": "i"}
+    if difficulty:
+        filter_dict["difficulty"] = difficulty
+    if max_prep_time is not None:
+        filter_dict["prepTimeMinutes"] = {"$lte": max_prep_time}
+    if min_rating is not None:
+        filter_dict["averageRating"] = {"$gte": min_rating}
+
+    sort_order_value = -1 if sort_order == "desc" else 1
+    sort = [(sort_by, sort_order_value)]
+
+    try:
+        result = recipes_collection.find(filter_dict).sort(sort).skip(skip).limit(limit)
+        recipes = []
+        async for recipe in result:
+            recipe["_id"] = str(recipe["_id"])
+            recipes.append(recipe)
+    except Exception:
+        return server_error_response(
+            "An error occurred while fetching recipes.",
+            "DATABASE_ERROR",
+            log_context="get_all_recipes",
+        )
+
+    return create_success_response(recipes, f"Found {len(recipes)} recipes.")
