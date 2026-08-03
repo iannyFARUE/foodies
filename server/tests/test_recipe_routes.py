@@ -164,3 +164,75 @@ class TestGetAllRecipes:
         assert response.status_code == 500
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "DATABASE_ERROR"
+
+
+from src.models.models import CreateRecipeRequest
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestCreateRecipe:
+    """Tests for POST /api/recipes/ endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_create_recipe_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.acknowledged = True
+        mock_result.inserted_id = ObjectId(TEST_RECIPE_ID)
+        mock_collection.insert_one.return_value = mock_result
+        mock_collection.find_one.return_value = {"_id": ObjectId(TEST_RECIPE_ID), "title": "New Recipe"}
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import create_recipe
+        result = await create_recipe(CreateRecipeRequest(title="New Recipe"))
+
+        assert result.success is True
+        assert result.data["title"] == "New Recipe"
+        mock_collection.insert_one.assert_called_once()
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_create_recipe_database_error(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_collection.insert_one.side_effect = Exception("Insert failed")
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import create_recipe
+        response = await create_recipe(CreateRecipeRequest(title="New Recipe"))
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 500
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "DATABASE_ERROR"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestCreateRecipesBatch:
+    """Tests for POST /api/recipes/batch endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_create_recipes_batch_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.inserted_ids = [ObjectId(TEST_RECIPE_ID), ObjectId("507f1f77bcf86cd799439012")]
+        mock_collection.insert_many.return_value = mock_result
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import create_recipes_batch
+        result = await create_recipes_batch([
+            CreateRecipeRequest(title="Recipe A"),
+            CreateRecipeRequest(title="Recipe B"),
+        ])
+
+        assert result.success is True
+        assert result.data["insertedCount"] == 2
+
+    async def test_create_recipes_batch_empty_list(self):
+        from src.routers.recipes import create_recipes_batch
+        response = await create_recipes_batch([])
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "EMPTY_REQUEST"
