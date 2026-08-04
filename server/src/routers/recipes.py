@@ -1,14 +1,43 @@
-from fastapi import APIRouter, Query
+from datetime import datetime, timezone
+from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
 from typing import List
 from src.database.mongo_client import get_collection
-from src.models.models import Recipe, CreateRecipeRequest, SuccessResponse
+from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
-from src.utils.response_docs import OBJECTID_VALIDATION_RESPONSES, DATABASE_OPERATION_RESPONSES, CRUD_OPERATION_RESPONSES
+from src.utils.response_docs import (
+    OBJECTID_VALIDATION_RESPONSES,
+    DATABASE_OPERATION_RESPONSES,
+    CRUD_OPERATION_RESPONSES,
+    CRUD_WITH_OBJECTID_RESPONSES,
+)
 from bson import ObjectId, errors
 
 router = APIRouter()
+
+
+@router.get(
+    "/cuisines",
+    response_model=SuccessResponse[List[str]],
+    status_code=200,
+    summary="Retrieve all distinct cuisines from the recipes collection.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def get_distinct_cuisines():
+    recipes_collection = get_collection("recipes")
+
+    try:
+        cuisines = await recipes_collection.distinct("cuisine")
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="get_distinct_cuisines",
+        )
+
+    valid_cuisines = sorted([c for c in cuisines if isinstance(c, str) and len(c) > 0])
+    return create_success_response(valid_cuisines, f"Found {len(valid_cuisines)} distinct cuisines")
 
 
 @router.get(
@@ -175,3 +204,289 @@ async def create_recipes_batch(recipes: List[CreateRecipeRequest]) -> SuccessRes
         "insertedCount": len(result.inserted_ids),
         "insertedIds": [str(_id) for _id in result.inserted_ids]
     }, f"Successfully created {len(result.inserted_ids)} recipes.")
+
+
+@router.patch(
+    "/{id}",
+    response_model=SuccessResponse[Recipe],
+    status_code=200,
+    summary="Update a single recipe by its ID.",
+    responses=CRUD_WITH_OBJECTID_RESPONSES
+)
+async def update_recipe(
+    recipe_data: UpdateRecipeRequest,
+    recipe_id: str = Path(..., alias="id")
+) -> SuccessResponse[Recipe]:
+    recipes_collection = get_collection("recipes")
+
+    try:
+        recipe_id = ObjectId(recipe_id)
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid recipe_id format: {recipe_id}",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    update_dict = recipe_data.model_dump(exclude_unset=True, exclude_none=True)
+    if not update_dict:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="No valid fields provided for update.",
+                code="NO_UPDATE_DATA"
+            )
+        )
+
+    try:
+        result = await recipes_collection.update_one({"_id": recipe_id}, {"$set": update_dict})
+    except Exception:
+        return server_error_response(
+            "An error occurred while updating the recipe.",
+            "DATABASE_ERROR",
+            log_context="update_recipe",
+        )
+
+    if result.matched_count == 0:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe with that _id was found: {recipe_id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    updated_recipe = await recipes_collection.find_one({"_id": recipe_id})
+    updated_recipe["_id"] = str(updated_recipe["_id"])
+    return create_success_response(updated_recipe, f"Recipe updated successfully. Modified {len(update_dict)} fields.")
+
+
+@router.patch(
+    "/",
+    response_model=SuccessResponse[dict],
+    status_code=200,
+    summary="Batch update recipes matching the given filter.",
+    responses=CRUD_OPERATION_RESPONSES
+)
+async def update_recipes_batch(request_body: dict = Body(...)) -> SuccessResponse[dict]:
+    recipes_collection = get_collection("recipes")
+
+    filter_data = request_body.get("filter", {})
+    update_data = request_body.get("update", {})
+
+    if not filter_data or not update_data:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="Both filter and update objects are required",
+                code="MISSING_FILTER"
+            )
+        )
+
+    try:
+        result = await recipes_collection.update_many(filter_data, {"$set": update_data})
+    except Exception:
+        return server_error_response(
+            "An error occurred while updating recipes.",
+            "DATABASE_ERROR",
+            log_context="update_recipes_batch",
+        )
+
+    return create_success_response({
+        "matchedCount": result.matched_count,
+        "modifiedCount": result.modified_count
+    }, f"Update operation completed. Matched {result.matched_count} recipe(s), modified {result.modified_count} recipe(s).")
+
+
+@router.delete(
+    "/{id}",
+    response_model=SuccessResponse[dict],
+    status_code=200,
+    summary="Delete a single recipe by its ID.",
+    responses=OBJECTID_VALIDATION_RESPONSES
+)
+async def delete_recipe_by_id(id: str):
+    try:
+        object_id = ObjectId(id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid recipe ID format: The provided ID '{id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    recipes_collection = get_collection("recipes")
+    try:
+        result = await recipes_collection.delete_one({"_id": object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="delete_recipe_by_id",
+        )
+
+    if result.deleted_count == 0:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe found with ID: {id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    return create_success_response({"deletedCount": result.deleted_count}, "Recipe deleted successfully")
+
+
+@router.delete(
+    "/{id}/find-and-delete",
+    response_model=SuccessResponse[Recipe],
+    status_code=200,
+    summary="Find and delete a recipe in a single atomic operation.",
+    responses=OBJECTID_VALIDATION_RESPONSES
+)
+async def find_and_delete_recipe(id: str):
+    try:
+        object_id = ObjectId(id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid recipe ID format: The provided ID '{id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    recipes_collection = get_collection("recipes")
+    try:
+        deleted_recipe = await recipes_collection.find_one_and_delete({"_id": object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="find_and_delete_recipe",
+        )
+
+    if deleted_recipe is None:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe found with ID: {id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    deleted_recipe["_id"] = str(deleted_recipe["_id"])
+    return create_success_response(deleted_recipe, "Recipe found and deleted successfully")
+
+
+@router.delete(
+    "/",
+    response_model=SuccessResponse[dict],
+    status_code=200,
+    summary="Delete multiple recipes matching the given filter.",
+    responses=CRUD_OPERATION_RESPONSES
+)
+async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessResponse[dict]:
+    recipes_collection = get_collection("recipes")
+    filter_data = request_body.get("filter", {})
+
+    if not filter_data:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="Filter object is required and cannot be empty.",
+                code="MISSING_FILTER"
+            )
+        )
+
+    try:
+        result = await recipes_collection.delete_many(filter_data)
+    except Exception:
+        return server_error_response(
+            "An error occurred while deleting recipes.",
+            "DATABASE_ERROR",
+            log_context="delete_recipes_batch",
+        )
+
+    return create_success_response({"deletedCount": result.deleted_count}, f"Delete operation completed. Removed {result.deleted_count} recipes.")
+
+
+@router.post(
+    "/{id}/reviews",
+    status_code=201,
+    summary="Add a review to a recipe.",
+    responses=OBJECTID_VALIDATION_RESPONSES
+)
+async def create_review(id: str, review: CreateReviewRequest):
+    try:
+        recipe_object_id = ObjectId(id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"The provided ID '{id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    recipes_collection = get_collection("recipes")
+    reviews_collection = get_collection("reviews")
+
+    try:
+        recipe = await recipes_collection.find_one({"_id": recipe_object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="create_review_lookup_recipe",
+        )
+
+    if recipe is None:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe found with ID: {id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    review_doc = review.model_dump()
+    review_doc["recipe_id"] = recipe_object_id
+    review_doc["date"] = datetime.now(timezone.utc)
+
+    try:
+        result = await reviews_collection.insert_one(review_doc)
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="create_review_insert",
+        )
+
+    # Recompute the recipe's denormalized averageRating/reviewCount so that
+    # GET /api/recipes/ can filter by minRating without a $lookup on every read.
+    stats_pipeline = [
+        {"$match": {"recipe_id": recipe_object_id}},
+        {"$group": {"_id": None, "averageRating": {"$avg": "$rating"}, "reviewCount": {"$sum": 1}}}
+    ]
+    stats_cursor = await reviews_collection.aggregate(stats_pipeline)
+    stats = await stats_cursor.to_list(length=None)
+
+    if stats:
+        await recipes_collection.update_one(
+            {"_id": recipe_object_id},
+            {"$set": {
+                "averageRating": round(stats[0]["averageRating"], 2),
+                "reviewCount": stats[0]["reviewCount"]
+            }}
+        )
+
+    created_review = await reviews_collection.find_one({"_id": result.inserted_id})
+    created_review["_id"] = str(created_review["_id"])
+    created_review["recipe_id"] = str(created_review["recipe_id"])
+
+    return create_success_response(created_review, "Review added successfully")
