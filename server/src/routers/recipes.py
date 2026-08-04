@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
 from typing import List, Optional
 from src.database.mongo_client import get_collection
-from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SuccessResponse
+from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SearchRecipesResponse, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
 from src.utils.response_docs import (
@@ -11,6 +11,7 @@ from src.utils.response_docs import (
     DATABASE_OPERATION_RESPONSES,
     CRUD_OPERATION_RESPONSES,
     CRUD_WITH_OBJECTID_RESPONSES,
+    SEARCH_ENDPOINT_RESPONSES,
 )
 from bson import ObjectId, errors
 
@@ -38,6 +39,105 @@ async def get_distinct_cuisines():
 
     valid_cuisines = sorted([c for c in cuisines if isinstance(c, str) and len(c) > 0])
     return create_success_response(valid_cuisines, f"Found {len(valid_cuisines)} distinct cuisines")
+
+
+@router.get(
+    "/search",
+    response_model=SuccessResponse[SearchRecipesResponse],
+    status_code=200,
+    summary="Search recipes using MongoDB Atlas Search.",
+    responses=SEARCH_ENDPOINT_RESPONSES
+)
+async def search_recipes(
+    description: Optional[str] = None,
+    instructions: Optional[str] = None,
+    tags: Optional[str] = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+    search_operator: str = Query(default="must", alias="searchOperator")
+):
+    valid_operators = {"must", "should", "mustNot", "filter"}
+    if search_operator not in valid_operators:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid search operator '{search_operator}'. The search operator must be one of {valid_operators}.",
+                code="INVALID_SEARCH_OPERATOR"
+            )
+        )
+
+    search_phrases = []
+    if description is not None:
+        search_phrases.append({"phrase": {"query": description, "path": "description"}})
+    if instructions is not None:
+        search_phrases.append({"phrase": {"query": instructions, "path": "instructions"}})
+    if tags is not None:
+        search_phrases.append({
+            "compound": {
+                "should": [
+                    {"phrase": {"query": tags, "path": "tags"}},
+                    {"text": {"query": tags, "path": "tags", "matchCriteria": "all",
+                              "fuzzy": {"maxEdits": 1, "prefixLength": 2}}}
+                ],
+                "minimumShouldMatch": 1
+            }
+        })
+
+    if not search_phrases:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="At least one search parameter must be provided.",
+                code="MISSING_SEARCH_PARAMS"
+            )
+        )
+
+    aggregation_pipeline = [
+        {"$search": {"index": "recipeSearchIndex", "compound": {search_operator: search_phrases}}},
+        {"$facet": {
+            "totalCount": [{"$count": "count"}],
+            "results": [
+                {"$skip": skip},
+                {"$limit": limit},
+                {"$project": {
+                    "_id": 1, "title": 1, "description": 1, "instructions": 1,
+                    "cuisine": 1, "difficulty": 1, "prepTimeMinutes": 1,
+                    "cookTimeMinutes": 1, "servings": 1, "ingredients": 1,
+                    "tags": 1, "averageRating": 1, "reviewCount": 1
+                }}
+            ]
+        }}
+    ]
+
+    try:
+        results = await execute_aggregation(aggregation_pipeline)
+    except Exception:
+        return server_error_response(
+            "An error occurred while performing the search.",
+            "SEARCH_ERROR",
+            log_context="search_recipes",
+        )
+
+    if not results:
+        return create_success_response(
+            SearchRecipesResponse(recipes=[], totalCount=0),
+            "No recipes found matching the search criteria."
+        )
+
+    facet_result = results[0]
+    total_count_array = facet_result.get("totalCount", [])
+    total_count = total_count_array[0].get("count", 0) if total_count_array else 0
+    recipes_data = facet_result.get("results", [])
+
+    recipes = []
+    for recipe in recipes_data:
+        recipe["_id"] = str(recipe["_id"])
+        recipes.append(recipe)
+
+    return create_success_response(
+        SearchRecipesResponse(recipes=recipes, totalCount=total_count),
+        f"Found {total_count} recipes matching the search criteria."
+    )
 
 
 @router.get(
