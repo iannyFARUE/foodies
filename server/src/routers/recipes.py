@@ -490,3 +490,86 @@ async def create_review(id: str, review: CreateReviewRequest):
     created_review["recipe_id"] = str(created_review["recipe_id"])
 
     return create_success_response(created_review, "Review added successfully")
+
+
+@router.get(
+    "/aggregations/byCuisine",
+    response_model=SuccessResponse[List[dict]],
+    status_code=200,
+    summary="Aggregate recipes by cuisine with average rating and recipe count.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def aggregate_recipes_by_cuisine():
+    pipeline = [
+        {"$match": {"cuisine": {"$exists": True, "$ne": None}}},
+        {"$group": {
+            "_id": "$cuisine",
+            "recipeCount": {"$sum": 1},
+            "averageRating": {"$avg": "$averageRating"}
+        }},
+        {"$project": {
+            "cuisine": "$_id",
+            "recipeCount": 1,
+            "averageRating": {"$round": ["$averageRating", 2]},
+            "_id": 0
+        }},
+        {"$sort": {"recipeCount": -1}}
+    ]
+
+    try:
+        results = await execute_aggregation(pipeline)
+    except Exception:
+        return server_error_response(
+            "Database error occurred during aggregation.",
+            "DATABASE_ERROR",
+            log_context="aggregate_recipes_by_cuisine",
+        )
+
+    return create_success_response(results, f"Aggregated statistics for {len(results)} cuisines")
+
+
+@router.get(
+    "/aggregations/topIngredients",
+    response_model=SuccessResponse[List[dict]],
+    status_code=200,
+    summary="Aggregate the most frequently used ingredients across all recipes.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def aggregate_top_ingredients(limit: int = Query(default=20, ge=1, le=100)):
+    pipeline = [
+        {"$match": {"ingredients": {"$exists": True, "$ne": None, "$ne": []}}},
+        {"$unwind": "$ingredients"},
+        {"$match": {"ingredients": {"$ne": None, "$ne": ""}}},
+        {"$group": {"_id": "$ingredients", "recipeCount": {"$sum": 1}}},
+        {"$sort": {"recipeCount": -1}},
+        {"$limit": limit},
+        {"$project": {"ingredient": "$_id", "recipeCount": 1, "_id": 0}}
+    ]
+
+    try:
+        results = await execute_aggregation(pipeline)
+    except Exception:
+        return server_error_response(
+            "Database error occurred during aggregation.",
+            "DATABASE_ERROR",
+            log_context="aggregate_top_ingredients",
+        )
+
+    return create_success_response(results, f"Found {len(results)} distinct ingredients")
+
+
+#------------------------------------
+# Helper Functions
+#------------------------------------
+
+async def execute_aggregation(pipeline: list) -> list:
+    """Run an aggregation pipeline against the recipes collection and collect all results."""
+    recipes_collection = get_collection("recipes")
+    cursor = await recipes_collection.aggregate(pipeline)
+    return await cursor.to_list(length=None)
+
+
+async def execute_aggregation_on_collection(collection, pipeline: list) -> list:
+    """Run an aggregation pipeline against an arbitrary collection and collect all results."""
+    cursor = await collection.aggregate(pipeline)
+    return await cursor.to_list(length=None)

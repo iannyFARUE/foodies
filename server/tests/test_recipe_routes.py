@@ -534,3 +534,62 @@ class TestCreateReview:
         assert response.status_code == 400
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "INVALID_OBJECT_ID"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAggregateByCuisine:
+    """Tests for GET /api/recipes/aggregations/byCuisine endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_by_cuisine_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = [
+            {"cuisine": "Italian", "recipeCount": 5, "averageRating": 4.2},
+            {"cuisine": "Mexican", "recipeCount": 3, "averageRating": 3.8},
+        ]
+        mock_collection.aggregate.return_value = mock_cursor
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_recipes_by_cuisine
+        result = await aggregate_recipes_by_cuisine()
+
+        assert result.success is True
+        assert len(result.data) == 2
+        assert result.data[0]["cuisine"] == "Italian"
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_by_cuisine_database_error(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_collection.aggregate.side_effect = Exception("boom")
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_recipes_by_cuisine
+        response = await aggregate_recipes_by_cuisine()
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 500
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAggregateTopIngredients:
+    """Tests for GET /api/recipes/aggregations/topIngredients endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_top_ingredients_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = [
+            {"ingredient": "salt", "recipeCount": 20},
+            {"ingredient": "garlic", "recipeCount": 15},
+        ]
+        mock_collection.aggregate.return_value = mock_cursor
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_top_ingredients
+        result = await aggregate_top_ingredients()
+
+        assert result.success is True
+        assert result.data[0]["ingredient"] == "salt"
