@@ -274,3 +274,118 @@ async def update_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
         "matchedCount": result.matched_count,
         "modifiedCount": result.modified_count
     }, f"Update operation completed. Matched {result.matched_count} recipe(s), modified {result.modified_count} recipe(s).")
+
+
+@router.delete(
+    "/{id}",
+    response_model=SuccessResponse[dict],
+    status_code=200,
+    summary="Delete a single recipe by its ID.",
+    responses=OBJECTID_VALIDATION_RESPONSES
+)
+async def delete_recipe_by_id(id: str):
+    try:
+        object_id = ObjectId(id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid recipe ID format: The provided ID '{id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    recipes_collection = get_collection("recipes")
+    try:
+        result = await recipes_collection.delete_one({"_id": object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="delete_recipe_by_id",
+        )
+
+    if result.deleted_count == 0:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe found with ID: {id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    return create_success_response({"deletedCount": result.deleted_count}, "Recipe deleted successfully")
+
+
+@router.delete(
+    "/{id}/find-and-delete",
+    response_model=SuccessResponse[Recipe],
+    status_code=200,
+    summary="Find and delete a recipe in a single atomic operation.",
+    responses=OBJECTID_VALIDATION_RESPONSES
+)
+async def find_and_delete_recipe(id: str):
+    try:
+        object_id = ObjectId(id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid recipe ID format: The provided ID '{id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    recipes_collection = get_collection("recipes")
+    try:
+        deleted_recipe = await recipes_collection.find_one_and_delete({"_id": object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="find_and_delete_recipe",
+        )
+
+    if deleted_recipe is None:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe found with ID: {id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    deleted_recipe["_id"] = str(deleted_recipe["_id"])
+    return create_success_response(deleted_recipe, "Recipe found and deleted successfully")
+
+
+@router.delete(
+    "/",
+    response_model=SuccessResponse[dict],
+    status_code=200,
+    summary="Delete multiple recipes matching the given filter.",
+    responses=CRUD_OPERATION_RESPONSES
+)
+async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessResponse[dict]:
+    recipes_collection = get_collection("recipes")
+    filter_data = request_body.get("filter", {})
+
+    if not filter_data:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="Filter object is required and cannot be empty.",
+                code="MISSING_FILTER"
+            )
+        )
+
+    try:
+        result = await recipes_collection.delete_many(filter_data)
+    except Exception:
+        return server_error_response(
+            "An error occurred while deleting recipes.",
+            "DATABASE_ERROR",
+            log_context="delete_recipes_batch",
+        )
+
+    return create_success_response({"deletedCount": result.deleted_count}, f"Delete operation completed. Removed {result.deleted_count} recipes.")
