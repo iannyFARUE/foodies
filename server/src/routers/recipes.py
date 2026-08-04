@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Optional
 from src.database.mongo_client import get_collection
-from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SuccessResponse
+from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SearchRecipesResponse, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
 from src.utils.response_docs import (
@@ -11,6 +11,7 @@ from src.utils.response_docs import (
     DATABASE_OPERATION_RESPONSES,
     CRUD_OPERATION_RESPONSES,
     CRUD_WITH_OBJECTID_RESPONSES,
+    SEARCH_ENDPOINT_RESPONSES,
 )
 from bson import ObjectId, errors
 
@@ -38,6 +39,105 @@ async def get_distinct_cuisines():
 
     valid_cuisines = sorted([c for c in cuisines if isinstance(c, str) and len(c) > 0])
     return create_success_response(valid_cuisines, f"Found {len(valid_cuisines)} distinct cuisines")
+
+
+@router.get(
+    "/search",
+    response_model=SuccessResponse[SearchRecipesResponse],
+    status_code=200,
+    summary="Search recipes using MongoDB Atlas Search.",
+    responses=SEARCH_ENDPOINT_RESPONSES
+)
+async def search_recipes(
+    description: Optional[str] = None,
+    instructions: Optional[str] = None,
+    tags: Optional[str] = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+    search_operator: str = Query(default="must", alias="searchOperator")
+):
+    valid_operators = {"must", "should", "mustNot", "filter"}
+    if search_operator not in valid_operators:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid search operator '{search_operator}'. The search operator must be one of {valid_operators}.",
+                code="INVALID_SEARCH_OPERATOR"
+            )
+        )
+
+    search_phrases = []
+    if description is not None:
+        search_phrases.append({"phrase": {"query": description, "path": "description"}})
+    if instructions is not None:
+        search_phrases.append({"phrase": {"query": instructions, "path": "instructions"}})
+    if tags is not None:
+        search_phrases.append({
+            "compound": {
+                "should": [
+                    {"phrase": {"query": tags, "path": "tags"}},
+                    {"text": {"query": tags, "path": "tags", "matchCriteria": "all",
+                              "fuzzy": {"maxEdits": 1, "prefixLength": 2}}}
+                ],
+                "minimumShouldMatch": 1
+            }
+        })
+
+    if not search_phrases:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="At least one search parameter must be provided.",
+                code="MISSING_SEARCH_PARAMS"
+            )
+        )
+
+    aggregation_pipeline = [
+        {"$search": {"index": "recipeSearchIndex", "compound": {search_operator: search_phrases}}},
+        {"$facet": {
+            "totalCount": [{"$count": "count"}],
+            "results": [
+                {"$skip": skip},
+                {"$limit": limit},
+                {"$project": {
+                    "_id": 1, "title": 1, "description": 1, "instructions": 1,
+                    "cuisine": 1, "difficulty": 1, "prepTimeMinutes": 1,
+                    "cookTimeMinutes": 1, "servings": 1, "ingredients": 1,
+                    "tags": 1, "averageRating": 1, "reviewCount": 1
+                }}
+            ]
+        }}
+    ]
+
+    try:
+        results = await execute_aggregation(aggregation_pipeline)
+    except Exception:
+        return server_error_response(
+            "An error occurred while performing the search.",
+            "SEARCH_ERROR",
+            log_context="search_recipes",
+        )
+
+    if not results:
+        return create_success_response(
+            SearchRecipesResponse(recipes=[], totalCount=0),
+            "No recipes found matching the search criteria."
+        )
+
+    facet_result = results[0]
+    total_count_array = facet_result.get("totalCount", [])
+    total_count = total_count_array[0].get("count", 0) if total_count_array else 0
+    recipes_data = facet_result.get("results", [])
+
+    recipes = []
+    for recipe in recipes_data:
+        recipe["_id"] = str(recipe["_id"])
+        recipes.append(recipe)
+
+    return create_success_response(
+        SearchRecipesResponse(recipes=recipes, totalCount=total_count),
+        f"Found {total_count} recipes matching the search criteria."
+    )
 
 
 @router.get(
@@ -490,3 +590,159 @@ async def create_review(id: str, review: CreateReviewRequest):
     created_review["recipe_id"] = str(created_review["recipe_id"])
 
     return create_success_response(created_review, "Review added successfully")
+
+
+@router.get(
+    "/aggregations/byCuisine",
+    response_model=SuccessResponse[List[dict]],
+    status_code=200,
+    summary="Aggregate recipes by cuisine with average rating and recipe count.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def aggregate_recipes_by_cuisine():
+    pipeline = [
+        {"$match": {"cuisine": {"$exists": True, "$ne": None}}},
+        {"$group": {
+            "_id": "$cuisine",
+            "recipeCount": {"$sum": 1},
+            "averageRating": {"$avg": "$averageRating"}
+        }},
+        {"$project": {
+            "cuisine": "$_id",
+            "recipeCount": 1,
+            "averageRating": {"$round": ["$averageRating", 2]},
+            "_id": 0
+        }},
+        {"$sort": {"recipeCount": -1}}
+    ]
+
+    try:
+        results = await execute_aggregation(pipeline)
+    except Exception:
+        return server_error_response(
+            "Database error occurred during aggregation.",
+            "DATABASE_ERROR",
+            log_context="aggregate_recipes_by_cuisine",
+        )
+
+    return create_success_response(results, f"Aggregated statistics for {len(results)} cuisines")
+
+
+@router.get(
+    "/aggregations/topIngredients",
+    response_model=SuccessResponse[List[dict]],
+    status_code=200,
+    summary="Aggregate the most frequently used ingredients across all recipes.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def aggregate_top_ingredients(limit: int = Query(default=20, ge=1, le=100)):
+    pipeline = [
+        {"$match": {"ingredients": {"$exists": True, "$ne": None, "$ne": []}}},
+        {"$unwind": "$ingredients"},
+        {"$match": {"ingredients": {"$ne": None, "$ne": ""}}},
+        {"$group": {"_id": "$ingredients", "recipeCount": {"$sum": 1}}},
+        {"$sort": {"recipeCount": -1}},
+        {"$limit": limit},
+        {"$project": {"ingredient": "$_id", "recipeCount": 1, "_id": 0}}
+    ]
+
+    try:
+        results = await execute_aggregation(pipeline)
+    except Exception:
+        return server_error_response(
+            "Database error occurred during aggregation.",
+            "DATABASE_ERROR",
+            log_context="aggregate_top_ingredients",
+        )
+
+    return create_success_response(results, f"Found {len(results)} distinct ingredients")
+
+
+@router.get(
+    "/aggregations/recentReviews",
+    response_model=SuccessResponse[List[dict]],
+    status_code=200,
+    summary="Aggregate recipes with their most recent reviews.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def aggregate_recipes_recent_reviews(
+    limit: int = Query(default=10, ge=1, le=50),
+    recipe_id: str = Query(default=None)
+):
+    pipeline: list = [{"$match": {"title": {"$exists": True}}}]
+
+    if recipe_id:
+        try:
+            object_id = ObjectId(recipe_id)
+            pipeline[0]["$match"]["_id"] = object_id
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=create_error_response(
+                    message="The provided recipe_id is not a valid ObjectId",
+                    code="INVALID_OBJECT_ID"
+                )
+            )
+
+    pipeline.extend([
+        # Join each recipe with all of its reviews (like a SQL LEFT JOIN)
+        {"$lookup": {"from": "reviews", "localField": "_id", "foreignField": "recipe_id", "as": "reviews"}},
+        # Only keep recipes that have at least one review
+        {"$match": {"reviews": {"$ne": []}}},
+        {"$addFields": {
+            "recentReviews": {"$slice": [{"$sortArray": {"input": "$reviews", "sortBy": {"date": -1}}}, limit]},
+            "mostRecentReviewDate": {"$max": "$reviews.date"}
+        }},
+        {"$sort": {"mostRecentReviewDate": -1}},
+        {"$limit": 50 if recipe_id else 20},
+        {"$project": {
+            "title": 1,
+            "cuisine": 1,
+            "_id": 1,
+            "recentReviews": {
+                "$map": {
+                    "input": "$recentReviews",
+                    "as": "review",
+                    "in": {
+                        "reviewerName": "$$review.reviewerName",
+                        "rating": "$$review.rating",
+                        "comment": "$$review.comment",
+                        "date": "$$review.date"
+                    }
+                }
+            },
+            "totalReviews": {"$size": "$reviews"}
+        }}
+    ])
+
+    try:
+        results = await execute_aggregation(pipeline)
+    except Exception:
+        return server_error_response(
+            "Database error occurred during aggregation.",
+            "DATABASE_ERROR",
+            log_context="aggregate_recipes_recent_reviews",
+        )
+
+    for result in results:
+        result["_id"] = str(result["_id"])
+
+    total_reviews = sum(r.get("totalReviews", 0) for r in results)
+    return create_success_response(results, f"Found {total_reviews} reviews from {len(results)} recipe(s)")
+
+
+#------------------------------------
+# Helper Functions
+#------------------------------------
+
+async def execute_aggregation(pipeline: list) -> list:
+    """Run an aggregation pipeline against the recipes collection and collect all results."""
+    recipes_collection = get_collection("recipes")
+    cursor = await recipes_collection.aggregate(pipeline)
+    return await cursor.to_list(length=None)
+
+
+async def execute_aggregation_on_collection(collection, pipeline: list) -> list:
+    """Run an aggregation pipeline against an arbitrary collection and collect all results."""
+    cursor = await collection.aggregate(pipeline)
+    return await cursor.to_list(length=None)

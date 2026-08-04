@@ -534,3 +534,155 @@ class TestCreateReview:
         assert response.status_code == 400
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "INVALID_OBJECT_ID"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAggregateByCuisine:
+    """Tests for GET /api/recipes/aggregations/byCuisine endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_by_cuisine_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = [
+            {"cuisine": "Italian", "recipeCount": 5, "averageRating": 4.2},
+            {"cuisine": "Mexican", "recipeCount": 3, "averageRating": 3.8},
+        ]
+        mock_collection.aggregate.return_value = mock_cursor
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_recipes_by_cuisine
+        result = await aggregate_recipes_by_cuisine()
+
+        assert result.success is True
+        assert len(result.data) == 2
+        assert result.data[0]["cuisine"] == "Italian"
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_by_cuisine_database_error(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_collection.aggregate.side_effect = Exception("boom")
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_recipes_by_cuisine
+        response = await aggregate_recipes_by_cuisine()
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 500
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAggregateTopIngredients:
+    """Tests for GET /api/recipes/aggregations/topIngredients endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_top_ingredients_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = [
+            {"ingredient": "salt", "recipeCount": 20},
+            {"ingredient": "garlic", "recipeCount": 15},
+        ]
+        mock_collection.aggregate.return_value = mock_cursor
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_top_ingredients
+        result = await aggregate_top_ingredients()
+
+        assert result.success is True
+        assert result.data[0]["ingredient"] == "salt"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAggregateRecentReviews:
+    """Tests for GET /api/recipes/aggregations/recentReviews endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_recent_reviews_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = [
+            {
+                "_id": ObjectId(TEST_RECIPE_ID),
+                "title": "Test Recipe",
+                "cuisine": "Italian",
+                "recentReviews": [{"reviewerName": "Alex", "rating": 5, "comment": "Great", "date": "2026-01-01"}],
+                "totalReviews": 1
+            }
+        ]
+        mock_collection.aggregate.return_value = mock_cursor
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_recipes_recent_reviews
+        # Pass recipe_id explicitly: calling the handler directly (bypassing
+        # FastAPI's request handling) means unset Query(...) params keep their
+        # raw Python default, which is the Query object itself, not None.
+        result = await aggregate_recipes_recent_reviews(recipe_id=None)
+
+        assert result.success is True
+        assert result.data[0]["_id"] == TEST_RECIPE_ID
+        assert result.data[0]["totalReviews"] == 1
+
+    async def test_aggregate_recent_reviews_invalid_recipe_id(self):
+        from src.routers.recipes import aggregate_recipes_recent_reviews
+        response = await aggregate_recipes_recent_reviews(recipe_id=INVALID_RECIPE_ID)
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_OBJECT_ID"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestSearchRecipes:
+    """Tests for GET /api/recipes/search endpoint."""
+
+    @patch('src.routers.recipes.execute_aggregation')
+    async def test_search_recipes_success(self, mock_execute_aggregation):
+        mock_execute_aggregation.return_value = [{
+            "totalCount": [{"count": 1}],
+            "results": [{"_id": ObjectId(TEST_RECIPE_ID), "title": "Garlic Pasta", "description": "Garlicky and rich"}]
+        }]
+
+        from src.routers.recipes import search_recipes
+        # Explicit defaults: calling the handler directly bypasses FastAPI's
+        # request handling, so unset Query(...) params keep the raw Query
+        # object as their Python-level default rather than being resolved.
+        result = await search_recipes(description="garlic", search_operator="must")
+
+        assert result.success is True
+        assert result.data.totalCount == 1
+        assert result.data.recipes[0].title == "Garlic Pasta"
+
+    async def test_search_recipes_missing_params(self):
+        from src.routers.recipes import search_recipes
+        response = await search_recipes(search_operator="must")
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "MISSING_SEARCH_PARAMS"
+
+    async def test_search_recipes_invalid_operator(self):
+        from src.routers.recipes import search_recipes
+        response = await search_recipes(description="garlic", search_operator="invalid")
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_SEARCH_OPERATOR"
+
+    @patch('src.routers.recipes.execute_aggregation')
+    async def test_search_recipes_no_results(self, mock_execute_aggregation):
+        mock_execute_aggregation.return_value = []
+
+        from src.routers.recipes import search_recipes
+        result = await search_recipes(description="nonexistent", search_operator="must")
+
+        assert result.success is True
+        assert result.data.totalCount == 0
+        assert result.data.recipes == []
