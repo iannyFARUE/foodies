@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Optional
 from src.database.mongo_client import get_collection
 from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SuccessResponse
 from src.utils.successResponse import create_success_response
@@ -556,6 +556,79 @@ async def aggregate_top_ingredients(limit: int = Query(default=20, ge=1, le=100)
         )
 
     return create_success_response(results, f"Found {len(results)} distinct ingredients")
+
+
+@router.get(
+    "/aggregations/recentReviews",
+    response_model=SuccessResponse[List[dict]],
+    status_code=200,
+    summary="Aggregate recipes with their most recent reviews.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def aggregate_recipes_recent_reviews(
+    limit: int = Query(default=10, ge=1, le=50),
+    recipe_id: str = Query(default=None)
+):
+    pipeline: list = [{"$match": {"title": {"$exists": True}}}]
+
+    if recipe_id:
+        try:
+            object_id = ObjectId(recipe_id)
+            pipeline[0]["$match"]["_id"] = object_id
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=create_error_response(
+                    message="The provided recipe_id is not a valid ObjectId",
+                    code="INVALID_OBJECT_ID"
+                )
+            )
+
+    pipeline.extend([
+        # Join each recipe with all of its reviews (like a SQL LEFT JOIN)
+        {"$lookup": {"from": "reviews", "localField": "_id", "foreignField": "recipe_id", "as": "reviews"}},
+        # Only keep recipes that have at least one review
+        {"$match": {"reviews": {"$ne": []}}},
+        {"$addFields": {
+            "recentReviews": {"$slice": [{"$sortArray": {"input": "$reviews", "sortBy": {"date": -1}}}, limit]},
+            "mostRecentReviewDate": {"$max": "$reviews.date"}
+        }},
+        {"$sort": {"mostRecentReviewDate": -1}},
+        {"$limit": 50 if recipe_id else 20},
+        {"$project": {
+            "title": 1,
+            "cuisine": 1,
+            "_id": 1,
+            "recentReviews": {
+                "$map": {
+                    "input": "$recentReviews",
+                    "as": "review",
+                    "in": {
+                        "reviewerName": "$$review.reviewerName",
+                        "rating": "$$review.rating",
+                        "comment": "$$review.comment",
+                        "date": "$$review.date"
+                    }
+                }
+            },
+            "totalReviews": {"$size": "$reviews"}
+        }}
+    ])
+
+    try:
+        results = await execute_aggregation(pipeline)
+    except Exception:
+        return server_error_response(
+            "Database error occurred during aggregation.",
+            "DATABASE_ERROR",
+            log_context="aggregate_recipes_recent_reviews",
+        )
+
+    for result in results:
+        result["_id"] = str(result["_id"])
+
+    total_reviews = sum(r.get("totalReviews", 0) for r in results)
+    return create_success_response(results, f"Found {total_reviews} reviews from {len(results)} recipe(s)")
 
 
 #------------------------------------

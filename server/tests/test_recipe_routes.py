@@ -593,3 +593,44 @@ class TestAggregateTopIngredients:
 
         assert result.success is True
         assert result.data[0]["ingredient"] == "salt"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAggregateRecentReviews:
+    """Tests for GET /api/recipes/aggregations/recentReviews endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_aggregate_recent_reviews_success(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = [
+            {
+                "_id": ObjectId(TEST_RECIPE_ID),
+                "title": "Test Recipe",
+                "cuisine": "Italian",
+                "recentReviews": [{"reviewerName": "Alex", "rating": 5, "comment": "Great", "date": "2026-01-01"}],
+                "totalReviews": 1
+            }
+        ]
+        mock_collection.aggregate.return_value = mock_cursor
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import aggregate_recipes_recent_reviews
+        # Pass recipe_id explicitly: calling the handler directly (bypassing
+        # FastAPI's request handling) means unset Query(...) params keep their
+        # raw Python default, which is the Query object itself, not None.
+        result = await aggregate_recipes_recent_reviews(recipe_id=None)
+
+        assert result.success is True
+        assert result.data[0]["_id"] == TEST_RECIPE_ID
+        assert result.data[0]["totalReviews"] == 1
+
+    async def test_aggregate_recent_reviews_invalid_recipe_id(self):
+        from src.routers.recipes import aggregate_recipes_recent_reviews
+        response = await aggregate_recipes_recent_reviews(recipe_id=INVALID_RECIPE_ID)
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_OBJECT_ID"
