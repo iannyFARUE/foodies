@@ -17,6 +17,29 @@ router = APIRouter()
 
 
 @router.get(
+    "/cuisines",
+    response_model=SuccessResponse[List[str]],
+    status_code=200,
+    summary="Retrieve all distinct cuisines from the recipes collection.",
+    responses=DATABASE_OPERATION_RESPONSES
+)
+async def get_distinct_cuisines():
+    recipes_collection = get_collection("recipes")
+
+    try:
+        cuisines = await recipes_collection.distinct("cuisine")
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="get_distinct_cuisines",
+        )
+
+    valid_cuisines = sorted([c for c in cuisines if isinstance(c, str) and len(c) > 0])
+    return create_success_response(valid_cuisines, f"Found {len(valid_cuisines)} distinct cuisines")
+
+
+@router.get(
     "/{id}",
     response_model=SuccessResponse[Recipe],
     status_code=200,

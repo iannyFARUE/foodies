@@ -427,3 +427,33 @@ class TestDeleteRecipesBatch:
         assert response.status_code == 400
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "MISSING_FILTER"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestGetDistinctCuisines:
+    """Tests for GET /api/recipes/cuisines endpoint."""
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_get_distinct_cuisines_returns_sorted_list(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_collection.distinct.return_value = ["Mexican", "Italian", None, "", "Italian"]
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_distinct_cuisines
+        result = await get_distinct_cuisines()
+
+        assert result.success is True
+        assert result.data == ["Italian", "Italian", "Mexican"]
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_get_distinct_cuisines_database_error(self, mock_get_collection):
+        mock_collection = AsyncMock()
+        mock_collection.distinct.side_effect = Exception("boom")
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_distinct_cuisines
+        response = await get_distinct_cuisines()
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 500
