@@ -457,3 +457,80 @@ class TestGetDistinctCuisines:
 
         assert isinstance(response, JSONResponse)
         assert response.status_code == 500
+
+
+from src.models.models import CreateReviewRequest
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestCreateReview:
+    """Tests for POST /api/recipes/{id}/reviews endpoint."""
+
+    def _mock_collections(self, recipe=None, insert_result=None, created_review=None, stats=None):
+        mock_recipes = AsyncMock()
+        mock_recipes.find_one.return_value = recipe
+
+        mock_reviews = AsyncMock()
+        mock_reviews.insert_one.return_value = insert_result
+        mock_reviews.find_one.return_value = created_review
+
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = stats or []
+        mock_reviews.aggregate.return_value = mock_cursor
+
+        def side_effect(name):
+            return mock_recipes if name == "recipes" else mock_reviews
+
+        return mock_recipes, mock_reviews, side_effect
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_create_review_success(self, mock_get_collection):
+        recipe = {"_id": ObjectId(TEST_RECIPE_ID), "title": "Test Recipe"}
+        insert_result = MagicMock()
+        insert_result.inserted_id = ObjectId("507f1f77bcf86cd799439099")
+        created_review = {
+            "_id": ObjectId("507f1f77bcf86cd799439099"),
+            "recipe_id": ObjectId(TEST_RECIPE_ID),
+            "reviewerName": "Alex",
+            "rating": 5,
+            "comment": "Great!",
+        }
+        stats = [{"averageRating": 5.0, "reviewCount": 1}]
+
+        mock_recipes, mock_reviews, side_effect = self._mock_collections(
+            recipe=recipe, insert_result=insert_result, created_review=created_review, stats=stats
+        )
+        mock_get_collection.side_effect = side_effect
+
+        from src.routers.recipes import create_review
+        result = await create_review(TEST_RECIPE_ID, CreateReviewRequest(reviewerName="Alex", rating=5, comment="Great!"))
+
+        assert result.success is True
+        assert result.data["reviewerName"] == "Alex"
+        mock_recipes.update_one.assert_called_once()
+        update_call_kwargs = mock_recipes.update_one.call_args[0][1]
+        assert update_call_kwargs["$set"]["averageRating"] == 5.0
+        assert update_call_kwargs["$set"]["reviewCount"] == 1
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_create_review_recipe_not_found(self, mock_get_collection):
+        mock_recipes, mock_reviews, side_effect = self._mock_collections(recipe=None)
+        mock_get_collection.side_effect = side_effect
+
+        from src.routers.recipes import create_review
+        response = await create_review(TEST_RECIPE_ID, CreateReviewRequest(reviewerName="Alex", rating=5))
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 404
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "RECIPE_NOT_FOUND"
+
+    async def test_create_review_invalid_recipe_id(self):
+        from src.routers.recipes import create_review
+        response = await create_review(INVALID_RECIPE_ID, CreateReviewRequest(reviewerName="Alex", rating=5))
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_OBJECT_ID"

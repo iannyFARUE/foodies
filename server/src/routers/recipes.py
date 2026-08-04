@@ -1,8 +1,9 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
 from typing import List
 from src.database.mongo_client import get_collection
-from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, SuccessResponse
+from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
 from src.utils.response_docs import (
@@ -412,3 +413,80 @@ async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
         )
 
     return create_success_response({"deletedCount": result.deleted_count}, f"Delete operation completed. Removed {result.deleted_count} recipes.")
+
+
+@router.post(
+    "/{id}/reviews",
+    status_code=201,
+    summary="Add a review to a recipe.",
+    responses=OBJECTID_VALIDATION_RESPONSES
+)
+async def create_review(id: str, review: CreateReviewRequest):
+    try:
+        recipe_object_id = ObjectId(id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"The provided ID '{id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    recipes_collection = get_collection("recipes")
+    reviews_collection = get_collection("reviews")
+
+    try:
+        recipe = await recipes_collection.find_one({"_id": recipe_object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="create_review_lookup_recipe",
+        )
+
+    if recipe is None:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe found with ID: {id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    review_doc = review.model_dump()
+    review_doc["recipe_id"] = recipe_object_id
+    review_doc["date"] = datetime.now(timezone.utc)
+
+    try:
+        result = await reviews_collection.insert_one(review_doc)
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="create_review_insert",
+        )
+
+    # Recompute the recipe's denormalized averageRating/reviewCount so that
+    # GET /api/recipes/ can filter by minRating without a $lookup on every read.
+    stats_pipeline = [
+        {"$match": {"recipe_id": recipe_object_id}},
+        {"$group": {"_id": None, "averageRating": {"$avg": "$rating"}, "reviewCount": {"$sum": 1}}}
+    ]
+    stats_cursor = await reviews_collection.aggregate(stats_pipeline)
+    stats = await stats_cursor.to_list(length=None)
+
+    if stats:
+        await recipes_collection.update_one(
+            {"_id": recipe_object_id},
+            {"$set": {
+                "averageRating": round(stats[0]["averageRating"], 2),
+                "reviewCount": stats[0]["reviewCount"]
+            }}
+        )
+
+    created_review = await reviews_collection.find_one({"_id": result.inserted_id})
+    created_review["_id"] = str(created_review["_id"])
+    created_review["recipe_id"] = str(created_review["recipe_id"])
+
+    return create_success_response(created_review, "Review added successfully")
