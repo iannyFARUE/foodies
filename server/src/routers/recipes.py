@@ -2,16 +2,21 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
 from typing import List, Optional
-from src.database.mongo_client import get_collection
-from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SearchRecipesResponse, SuccessResponse
+from src.database.mongo_client import get_collection, voyage_ai_available
+from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SearchRecipesResponse, VectorSearchResult, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
+from src.utils.exceptions import VoyageAuthError, VoyageAPIError
+from src.utils.logger import logger
+import voyageai
+import voyageai.error as voyage_error
 from src.utils.response_docs import (
     OBJECTID_VALIDATION_RESPONSES,
     DATABASE_OPERATION_RESPONSES,
     CRUD_OPERATION_RESPONSES,
     CRUD_WITH_OBJECTID_RESPONSES,
     SEARCH_ENDPOINT_RESPONSES,
+    VECTOR_SEARCH_RESPONSES,
 )
 from bson import ObjectId, errors
 
@@ -138,6 +143,94 @@ async def search_recipes(
         SearchRecipesResponse(recipes=recipes, totalCount=total_count),
         f"Found {total_count} recipes matching the search criteria."
     )
+
+
+model = "voyage-3-large"
+outputDimension = 2048
+
+
+@router.get(
+    "/vector-search",
+    response_model=SuccessResponse[List[VectorSearchResult]],
+    responses=VECTOR_SEARCH_RESPONSES
+)
+async def vector_search_recipes(
+    q: str = Query(..., description="Search query to find similar recipes by description"),
+    limit: int = Query(default=10, ge=1, le=50)
+):
+    if not voyage_ai_available():
+        return JSONResponse(
+            status_code=503,
+            content=create_error_response(
+                message="Vector search unavailable: VOYAGE_API_KEY not configured. Please add your API key to the .env file",
+                code="SERVICE_UNAVAILABLE"
+            )
+        )
+
+    try:
+        query_embedding = get_embedding(q, input_type="query")
+        recipes_collection = get_collection("recipes")
+
+        pipeline = [
+            {"$vectorSearch": {
+                "index": "vector_index",
+                "path": "description_embedding_voyage_3_large",
+                "queryVector": query_embedding,
+                "numCandidates": limit * 20,
+                "limit": limit
+            }},
+            {"$project": {
+                "_id": 1, "title": 1, "description": 1, "cuisine": 1,
+                "score": {"$meta": "vectorSearchScore"}
+            }}
+        ]
+
+        raw_results = await execute_aggregation_on_collection(recipes_collection, pipeline)
+        for result in raw_results:
+            result["_id"] = str(result["_id"])
+
+        results = [VectorSearchResult(**doc) for doc in raw_results]
+
+        return create_success_response(results, f"Found {len(results)} similar recipes for query: '{q}'")
+
+    except VoyageAuthError:
+        raise
+    except VoyageAPIError:
+        raise
+    except Exception:
+        return server_error_response(
+            "Error performing vector search.",
+            "VECTOR_SEARCH_ERROR",
+            log_context="vector_search_recipes",
+        )
+
+
+def get_embedding(data, input_type="document", client=None):
+    try:
+        if client is None:
+            client = voyageai.Client()
+        embeddings = client.embed(
+            data, model=model, output_dimension=outputDimension, input_type=input_type
+        ).embeddings
+        return embeddings[0]
+    except voyage_error.AuthenticationError:
+        logger.exception("Voyage AI authentication failed")
+        raise VoyageAuthError("Invalid Voyage AI API key. Please check your VOYAGE_API_KEY in the .env file")
+    except voyage_error.InvalidRequestError:
+        logger.exception("Voyage AI invalid request")
+        raise VoyageAPIError("Invalid request to Voyage AI API.", 400)
+    except voyage_error.RateLimitError:
+        logger.exception("Voyage AI rate limit")
+        raise VoyageAPIError("Voyage AI API rate limit exceeded.", 429)
+    except voyage_error.ServiceUnavailableError:
+        logger.exception("Voyage AI service unavailable")
+        raise VoyageAPIError("Voyage AI service unavailable.", 503)
+    except voyage_error.VoyageError as e:
+        logger.exception("Voyage AI API error")
+        raise VoyageAPIError("Voyage AI API error.", getattr(e, "http_status", 500) or 500)
+    except Exception:
+        logger.exception("Failed to generate embedding")
+        raise VoyageAPIError("Failed to generate embedding.", 500)
 
 
 @router.get(
