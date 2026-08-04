@@ -686,3 +686,55 @@ class TestSearchRecipes:
         assert result.success is True
         assert result.data.totalCount == 0
         assert result.data.recipes == []
+
+
+from src.utils.exceptions import VoyageAuthError, VoyageAPIError
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestVectorSearchRecipes:
+    """Tests for GET /api/recipes/vector-search endpoint."""
+
+    @patch('src.routers.recipes.voyage_ai_available')
+    async def test_vector_search_unavailable_without_api_key(self, mock_available):
+        mock_available.return_value = None
+
+        from src.routers.recipes import vector_search_recipes
+        response = await vector_search_recipes(q="garlicky pasta")
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 503
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "SERVICE_UNAVAILABLE"
+
+    @patch('src.routers.recipes.execute_aggregation_on_collection')
+    @patch('src.routers.recipes.get_embedding')
+    @patch('src.routers.recipes.voyage_ai_available')
+    @patch('src.routers.recipes.get_collection')
+    async def test_vector_search_success(
+        self, mock_get_collection, mock_available, mock_get_embedding, mock_execute_aggregation
+    ):
+        mock_available.return_value = "fake-key"
+        mock_get_embedding.return_value = [0.1] * 2048
+        mock_get_collection.return_value = AsyncMock()
+        mock_execute_aggregation.return_value = [
+            {"_id": ObjectId(TEST_RECIPE_ID), "title": "Garlic Pasta", "description": "Rich and garlicky", "cuisine": "Italian", "score": 0.95}
+        ]
+
+        from src.routers.recipes import vector_search_recipes
+        result = await vector_search_recipes(q="garlicky pasta", limit=10)
+
+        assert result.success is True
+        assert result.data[0].title == "Garlic Pasta"
+        assert result.data[0].score == 0.95
+
+    @patch('src.routers.recipes.voyage_ai_available')
+    @patch('src.routers.recipes.get_embedding')
+    async def test_vector_search_propagates_voyage_auth_error(self, mock_get_embedding, mock_available):
+        mock_available.return_value = "fake-key"
+        mock_get_embedding.side_effect = VoyageAuthError("bad key")
+
+        from src.routers.recipes import vector_search_recipes
+        with pytest.raises(VoyageAuthError):
+            await vector_search_recipes(q="garlicky pasta")
