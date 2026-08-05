@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Path, Body
 from fastapi.responses import JSONResponse
@@ -302,7 +303,10 @@ async def get_all_recipes(
     recipes_collection = get_collection("recipes")
     filter_dict = {}
     if cuisine:
-        filter_dict["cuisine"] = {"$regex": cuisine, "$options": "i"}
+        # Escape regex metacharacters so a client can't submit a pattern like
+        # "(a+)+$" that causes catastrophic backtracking (ReDoS) against every
+        # document scanned.
+        filter_dict["cuisine"] = {"$regex": re.escape(cuisine), "$options": "i"}
     if difficulty:
         filter_dict["difficulty"] = difficulty
     if max_prep_time is not None:

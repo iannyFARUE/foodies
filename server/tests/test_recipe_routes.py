@@ -121,7 +121,7 @@ class TestGetAllRecipes:
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        result = await get_all_recipes()
+        result = await get_all_recipes(cuisine=None)
 
         assert result.success is True
         assert len(result.data) == 2
@@ -140,13 +140,27 @@ class TestGetAllRecipes:
         assert called_filter["cuisine"] == {"$regex": "Italian", "$options": "i"}
 
     @patch('src.routers.recipes.get_collection')
+    async def test_get_all_recipes_escapes_regex_metacharacters_in_cuisine(self, mock_get_collection):
+        mock_collection = MagicMock()
+        mock_collection.find.return_value = _AsyncCursorStub([])
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_all_recipes
+        # A classic catastrophic-backtracking pattern; if passed through to
+        # $regex unescaped, this can pin a CPU core evaluating it per document.
+        await get_all_recipes(cuisine="(a+)+$")
+
+        called_filter = mock_collection.find.call_args[0][0]
+        assert called_filter["cuisine"]["$regex"] == "\\(a\\+\\)\\+\\$"
+
+    @patch('src.routers.recipes.get_collection')
     async def test_get_all_recipes_applies_min_rating_filter(self, mock_get_collection):
         mock_collection = MagicMock()
         mock_collection.find.return_value = _AsyncCursorStub([])
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        await get_all_recipes(min_rating=4.0)
+        await get_all_recipes(cuisine=None, min_rating=4.0)
 
         called_filter = mock_collection.find.call_args[0][0]
         assert called_filter["averageRating"] == {"$gte": 4.0}
@@ -158,7 +172,7 @@ class TestGetAllRecipes:
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        response = await get_all_recipes()
+        response = await get_all_recipes(cuisine=None)
 
         assert isinstance(response, JSONResponse)
         assert response.status_code == 500
