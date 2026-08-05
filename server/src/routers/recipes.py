@@ -8,6 +8,7 @@ from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
 from src.utils.exceptions import VoyageAuthError, VoyageAPIError
 from src.utils.logger import logger
+from src.utils.query_validation import validate_recipe_filter, validate_recipe_update
 import voyageai
 import voyageai.error as voyage_error
 from src.utils.response_docs import (
@@ -21,6 +22,12 @@ from src.utils.response_docs import (
 from bson import ObjectId, errors
 
 router = APIRouter()
+
+# Fields clients may reference in batch filter/update request bodies. Filters may
+# target any real recipe field; updates exclude server-managed fields
+# (averageRating/reviewCount are recomputed from reviews, not client-writable).
+BATCH_FILTER_ALLOWED_FIELDS = set(Recipe.model_fields.keys()) - {"id"}
+BATCH_UPDATE_ALLOWED_FIELDS = set(UpdateRecipeRequest.model_fields.keys())
 
 
 @router.get(
@@ -478,6 +485,20 @@ async def update_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
             )
         )
 
+    filter_error = validate_recipe_filter(filter_data, BATCH_FILTER_ALLOWED_FIELDS)
+    if filter_error:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(message=filter_error, code="INVALID_FILTER_FIELD")
+        )
+
+    update_error = validate_recipe_update(update_data, BATCH_UPDATE_ALLOWED_FIELDS)
+    if update_error:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(message=update_error, code="INVALID_UPDATE_FIELD")
+        )
+
     try:
         result = await recipes_collection.update_many(filter_data, {"$set": update_data})
     except Exception:
@@ -594,6 +615,13 @@ async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
                 message="Filter object is required and cannot be empty.",
                 code="MISSING_FILTER"
             )
+        )
+
+    filter_error = validate_recipe_filter(filter_data, BATCH_FILTER_ALLOWED_FIELDS)
+    if filter_error:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(message=filter_error, code="INVALID_FILTER_FIELD")
         )
 
     try:

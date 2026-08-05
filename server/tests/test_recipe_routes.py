@@ -326,6 +326,38 @@ class TestUpdateRecipesBatch:
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "MISSING_FILTER"
 
+    @patch('src.routers.recipes.get_collection')
+    async def test_update_recipes_batch_rejects_where_operator_in_filter(self, mock_get_collection):
+        mock_get_collection.return_value = AsyncMock()
+
+        from src.routers.recipes import update_recipes_batch
+        response = await update_recipes_batch({
+            "filter": {"$where": "sleep(1000) || true"},
+            "update": {"difficulty": "easy"}
+        })
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_FILTER_FIELD"
+        mock_get_collection.return_value.update_many.assert_not_called()
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_update_recipes_batch_rejects_field_outside_schema(self, mock_get_collection):
+        mock_get_collection.return_value = AsyncMock()
+
+        from src.routers.recipes import update_recipes_batch
+        response = await update_recipes_batch({
+            "filter": {"cuisine": "Italian"},
+            "update": {"averageRating": 5.0}
+        })
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_UPDATE_FIELD"
+        mock_get_collection.return_value.update_many.assert_not_called()
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -427,6 +459,19 @@ class TestDeleteRecipesBatch:
         assert response.status_code == 400
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "MISSING_FILTER"
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_delete_recipes_batch_rejects_where_operator_in_filter(self, mock_get_collection):
+        mock_get_collection.return_value = AsyncMock()
+
+        from src.routers.recipes import delete_recipes_batch
+        response = await delete_recipes_batch({"filter": {"$where": "sleep(1000) || true"}})
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_FILTER_FIELD"
+        mock_get_collection.return_value.delete_many.assert_not_called()
 
 
 @pytest.mark.unit
