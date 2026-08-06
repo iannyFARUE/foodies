@@ -1,6 +1,6 @@
 import re
 from datetime import datetime, timezone
-from fastapi import APIRouter, Query, Path, Body
+from fastapi import APIRouter, Query, Path, Body, Depends
 from fastapi.responses import JSONResponse
 from typing import List, Optional
 from src.database.mongo_client import get_collection, voyage_ai_available
@@ -10,6 +10,7 @@ from src.utils.errorResponse import create_error_response, server_error_response
 from src.utils.exceptions import VoyageAuthError, VoyageAPIError
 from src.utils.logger import logger
 from src.utils.query_validation import validate_recipe_filter, validate_recipe_update
+from src.utils.auth import require_api_key
 import voyageai
 import voyageai.error as voyage_error
 from src.utils.response_docs import (
