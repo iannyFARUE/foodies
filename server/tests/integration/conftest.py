@@ -9,6 +9,9 @@ import socket
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def is_port_in_use(port):
@@ -56,7 +59,8 @@ def server():
 
 @pytest_asyncio.fixture
 async def client(server):
-    async with AsyncClient(base_url=server, timeout=30.0) as ac:
+    headers = {"X-API-Key": os.getenv("API_KEY", "")}
+    async with AsyncClient(base_url=server, timeout=30.0, headers=headers) as ac:
         yield ac
 
 

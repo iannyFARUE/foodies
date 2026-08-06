@@ -22,7 +22,10 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` and set `MONGODB_URI` (and optionally `VOYAGE_API_KEY`).
+Edit `.env` and set `MONGODB_URI` (and optionally `VOYAGE_API_KEY`). Also set
+`API_KEY` — a shared secret required on every write/delete request to
+`/api/recipes` (sent as the `X-API-Key` header); generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 ## Seed sample data
 
@@ -85,6 +88,11 @@ server/
   of Search + Vector Search indexes per cluster. If you're also running the
   `sample-app-python-mflix` reference project against the same cluster, you
   may need a second cluster or to free up an index slot.
+- **API key on writes:** all `POST`/`PATCH`/`DELETE` endpoints under
+  `/api/recipes` require an `X-API-Key` header matching the server's `API_KEY`
+  env var; `GET` endpoints (browsing, search, aggregations) stay public. This
+  is a single shared secret, not per-user accounts — enough to stop anonymous
+  writes without building out a user system.
 
 See `docs/superpowers/specs/2026-08-01-foodies-api-design.md` and
 `docs/superpowers/plans/2026-08-01-foodies-api.md` for the full design spec
