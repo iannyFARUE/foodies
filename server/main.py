@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from src.routers import recipes
 from src.database.mongo_client import db, get_collection
-from src.utils.exceptions import VoyageAuthError, VoyageAPIError
+from src.utils.exceptions import VoyageAuthError, VoyageAPIError, APIKeyError
 from src.utils.errorResponse import create_error_response
 from src.utils.logger import logger
 from src.middleware.request_logging import RequestLoggingMiddleware
@@ -145,6 +145,17 @@ async def voyage_api_error_handler(request: Request, exc: VoyageAPIError):
         content=create_error_response(
             message=client_messages.get(exc.status_code, "Vector search failed."),
             code="VOYAGE_API_ERROR",
+        )
+    )
+
+
+@app.exception_handler(APIKeyError)
+async def api_key_error_handler(request: Request, exc: APIKeyError):
+    return JSONResponse(
+        status_code=401,
+        content=create_error_response(
+            message=exc.message,
+            code="INVALID_API_KEY"
         )
     )
 

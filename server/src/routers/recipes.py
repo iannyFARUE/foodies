@@ -339,7 +339,8 @@ async def get_all_recipes(
     response_model=SuccessResponse[Recipe],
     status_code=201,
     summary="Create a new recipe.",
-    responses=CRUD_OPERATION_RESPONSES
+    responses=CRUD_OPERATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def create_recipe(recipe: CreateRecipeRequest):
     recipe_data = recipe.model_dump(exclude_none=True)
@@ -381,7 +382,8 @@ async def create_recipe(recipe: CreateRecipeRequest):
     response_model=SuccessResponse[dict],
     status_code=201,
     summary="Create multiple recipes in a single request.",
-    responses=CRUD_OPERATION_RESPONSES
+    responses=CRUD_OPERATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def create_recipes_batch(recipes: List[CreateRecipeRequest]) -> SuccessResponse[dict]:
     if not recipes:
@@ -416,7 +418,8 @@ async def create_recipes_batch(recipes: List[CreateRecipeRequest]) -> SuccessRes
     response_model=SuccessResponse[Recipe],
     status_code=200,
     summary="Update a single recipe by its ID.",
-    responses=CRUD_WITH_OBJECTID_RESPONSES
+    responses=CRUD_WITH_OBJECTID_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def update_recipe(
     recipe_data: UpdateRecipeRequest,
@@ -473,7 +476,8 @@ async def update_recipe(
     response_model=SuccessResponse[dict],
     status_code=200,
     summary="Batch update recipes matching the given filter.",
-    responses=CRUD_OPERATION_RESPONSES
+    responses=CRUD_OPERATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def update_recipes_batch(request_body: dict = Body(...)) -> SuccessResponse[dict]:
     recipes_collection = get_collection("recipes")
@@ -524,7 +528,8 @@ async def update_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
     response_model=SuccessResponse[dict],
     status_code=200,
     summary="Delete a single recipe by its ID.",
-    responses=OBJECTID_VALIDATION_RESPONSES
+    responses=OBJECTID_VALIDATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def delete_recipe_by_id(id: str):
     try:
@@ -565,7 +570,8 @@ async def delete_recipe_by_id(id: str):
     response_model=SuccessResponse[Recipe],
     status_code=200,
     summary="Find and delete a recipe in a single atomic operation.",
-    responses=OBJECTID_VALIDATION_RESPONSES
+    responses=OBJECTID_VALIDATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def find_and_delete_recipe(id: str):
     try:
@@ -607,7 +613,8 @@ async def find_and_delete_recipe(id: str):
     response_model=SuccessResponse[dict],
     status_code=200,
     summary="Delete multiple recipes matching the given filter.",
-    responses=CRUD_OPERATION_RESPONSES
+    responses=CRUD_OPERATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessResponse[dict]:
     recipes_collection = get_collection("recipes")
@@ -645,7 +652,8 @@ async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
     "/{id}/reviews",
     status_code=201,
     summary="Add a review to a recipe.",
-    responses=OBJECTID_VALIDATION_RESPONSES
+    responses=OBJECTID_VALIDATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
 )
 async def create_review(id: str, review: CreateReviewRequest):
     try:
