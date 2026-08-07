@@ -1,4 +1,4 @@
-"""Custom exception classes for Voyage AI interactions and API authentication."""
+"""Custom exception classes for Voyage AI interactions, API authentication, and rate limiting."""
 
 
 class VoyageAuthError(Exception):
@@ -16,5 +16,12 @@ class VoyageAPIError(Exception):
 
 class APIKeyError(Exception):
     def __init__(self, message: str = "Missing or invalid API key"):
+        self.message = message
+        super().__init__(self.message)
+
+
+class RateLimitExceededError(Exception):
+    def __init__(self, retry_after: float, message: str = "Rate limit exceeded. Please try again later."):
+        self.retry_after = retry_after
         self.message = message
         super().__init__(self.message)

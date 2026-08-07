@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from src.routers import recipes
 from src.database.mongo_client import db, get_collection
-from src.utils.exceptions import VoyageAuthError, VoyageAPIError, APIKeyError
+from src.utils.exceptions import VoyageAuthError, VoyageAPIError, APIKeyError, RateLimitExceededError
 from src.utils.errorResponse import create_error_response
 from src.utils.logger import logger
 from src.middleware.request_logging import RequestLoggingMiddleware
@@ -157,6 +157,18 @@ async def api_key_error_handler(request: Request, exc: APIKeyError):
             message=exc.message,
             code="INVALID_API_KEY"
         )
+    )
+
+
+@app.exception_handler(RateLimitExceededError)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceededError):
+    return JSONResponse(
+        status_code=429,
+        content=create_error_response(
+            message=exc.message,
+            code="RATE_LIMIT_EXCEEDED"
+        ),
+        headers={"Retry-After": str(int(exc.retry_after) + 1)}
     )
 
 

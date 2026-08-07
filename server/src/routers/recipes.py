@@ -11,6 +11,7 @@ from src.utils.exceptions import VoyageAuthError, VoyageAPIError
 from src.utils.logger import logger
 from src.utils.query_validation import validate_recipe_filter, validate_recipe_update
 from src.utils.auth import require_api_key
+from src.utils.rate_limit import InMemoryRateLimiter, make_rate_limiter
 import voyageai
 import voyageai.error as voyage_error
 from src.utils.response_docs import (
@@ -30,6 +31,10 @@ router = APIRouter()
 # (averageRating/reviewCount are recomputed from reviews, not client-writable).
 BATCH_FILTER_ALLOWED_FIELDS = set(Recipe.model_fields.keys()) - {"id"}
 BATCH_UPDATE_ALLOWED_FIELDS = set(UpdateRecipeRequest.model_fields.keys())
+
+# /vector-search calls the paid Voyage AI embeddings API per request, so it's
+# rate limited per client IP to bound cost/availability exposure.
+VECTOR_SEARCH_RATE_LIMIT = InMemoryRateLimiter(max_requests=10, window_seconds=60)
 
 
 @router.get(
@@ -161,7 +166,8 @@ outputDimension = 2048
 @router.get(
     "/vector-search",
     response_model=SuccessResponse[List[VectorSearchResult]],
-    responses=VECTOR_SEARCH_RESPONSES
+    responses=VECTOR_SEARCH_RESPONSES,
+    dependencies=[Depends(make_rate_limiter(VECTOR_SEARCH_RATE_LIMIT))]
 )
 async def vector_search_recipes(
     q: str = Query(..., description="Search query to find similar recipes by description"),

@@ -93,6 +93,10 @@ server/
   env var; `GET` endpoints (browsing, search, aggregations) stay public. This
   is a single shared secret, not per-user accounts — enough to stop anonymous
   writes without building out a user system.
+- **Vector search rate limiting:** `/vector-search` calls the paid Voyage AI
+  embeddings API per request, so it's capped at 10 requests/minute per client
+  IP via an in-memory limiter. Single-process only (state isn't shared across
+  workers), which matches this app's one-process deployment.
 
 See `docs/superpowers/specs/2026-08-01-foodies-api-design.md` and
 `docs/superpowers/plans/2026-08-01-foodies-api.md` for the full design spec
