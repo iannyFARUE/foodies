@@ -86,6 +86,10 @@ server/
 - **Denormalized ratings:** each recipe stores `averageRating`/`reviewCount`,
   recomputed whenever a review is added. This lets `GET /api/recipes/` filter
   by `minRating` directly, without a `$lookup` on every list request.
+- **Pagination metadata:** `GET /api/recipes/` and `/search` still take
+  `skip`/`limit`, but responses now include a `pagination` object
+  (`page`/`limit`/`total`/`pages`) computed from a `count_documents`/`$facet`
+  total, so clients can tell whether more pages exist.
 - **Embeddings live on the recipe itself** (`description_embedding_voyage_3_large`),
   unlike the reference project's separate `embedded_movies` collection — there's
   no reason to split it out since every recipe gets exactly one embedding.

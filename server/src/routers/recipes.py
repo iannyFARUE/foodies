@@ -12,6 +12,7 @@ from src.utils.logger import logger
 from src.utils.query_validation import validate_recipe_filter, validate_recipe_update
 from src.utils.auth import require_api_key
 from src.utils.rate_limit import InMemoryRateLimiter, make_rate_limiter
+from src.utils.pagination import build_pagination
 import voyageai
 import voyageai.error as voyage_error
 from src.utils.response_docs import (
@@ -140,7 +141,8 @@ async def search_recipes(
     if not results:
         return create_success_response(
             SearchRecipesResponse(recipes=[], totalCount=0),
-            "No recipes found matching the search criteria."
+            "No recipes found matching the search criteria.",
+            pagination=build_pagination(skip=skip, limit=limit, total=0)
         )
 
     facet_result = results[0]
@@ -155,7 +157,8 @@ async def search_recipes(
 
     return create_success_response(
         SearchRecipesResponse(recipes=recipes, totalCount=total_count),
-        f"Found {total_count} recipes matching the search criteria."
+        f"Found {total_count} recipes matching the search criteria.",
+        pagination=build_pagination(skip=skip, limit=limit, total=total_count)
     )
 
 
@@ -325,6 +328,7 @@ async def get_all_recipes(
     sort = [(sort_by, sort_order_value)]
 
     try:
+        total = await recipes_collection.count_documents(filter_dict)
         result = recipes_collection.find(filter_dict).sort(sort).skip(skip).limit(limit)
         recipes = []
         async for recipe in result:
@@ -337,7 +341,8 @@ async def get_all_recipes(
             log_context="get_all_recipes",
         )
 
-    return create_success_response(recipes, f"Found {len(recipes)} recipes.")
+    pagination = build_pagination(skip=skip, limit=limit, total=total)
+    return create_success_response(recipes, f"Found {len(recipes)} recipes.", pagination=pagination)
 
 
 @router.post(

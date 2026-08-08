@@ -118,23 +118,47 @@ class TestGetAllRecipes:
             {"_id": ObjectId("507f1f77bcf86cd799439012"), "title": "Recipe B", "cuisine": "Mexican"},
         ]
         mock_collection.find.return_value = _AsyncCursorStub(recipes)
+        mock_collection.count_documents = AsyncMock(return_value=2)
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        result = await get_all_recipes(cuisine=None)
+        result = await get_all_recipes(cuisine=None, limit=20, skip=0)
 
         assert result.success is True
         assert len(result.data) == 2
         assert result.data[0]["_id"] == TEST_RECIPE_ID
 
     @patch('src.routers.recipes.get_collection')
-    async def test_get_all_recipes_applies_cuisine_filter(self, mock_get_collection):
+    async def test_get_all_recipes_includes_pagination_metadata(self, mock_get_collection):
         mock_collection = MagicMock()
-        mock_collection.find.return_value = _AsyncCursorStub([])
+        recipes = [
+            {"_id": ObjectId(TEST_RECIPE_ID), "title": "Recipe A", "cuisine": "Italian"},
+            {"_id": ObjectId("507f1f77bcf86cd799439012"), "title": "Recipe B", "cuisine": "Mexican"},
+        ]
+        mock_collection.find.return_value = _AsyncCursorStub(recipes)
+        mock_collection.count_documents = AsyncMock(return_value=45)
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        await get_all_recipes(cuisine="Italian")
+        result = await get_all_recipes(
+            cuisine=None, difficulty=None, max_prep_time=None, min_rating=None, limit=20, skip=0
+        )
+
+        assert result.pagination.page == 1
+        assert result.pagination.limit == 20
+        assert result.pagination.total == 45
+        assert result.pagination.pages == 3
+        mock_collection.count_documents.assert_awaited_once_with({})
+
+    @patch('src.routers.recipes.get_collection')
+    async def test_get_all_recipes_applies_cuisine_filter(self, mock_get_collection):
+        mock_collection = MagicMock()
+        mock_collection.find.return_value = _AsyncCursorStub([])
+        mock_collection.count_documents = AsyncMock(return_value=0)
+        mock_get_collection.return_value = mock_collection
+
+        from src.routers.recipes import get_all_recipes
+        await get_all_recipes(cuisine="Italian", limit=20, skip=0)
 
         called_filter = mock_collection.find.call_args[0][0]
         assert called_filter["cuisine"] == {"$regex": "Italian", "$options": "i"}
@@ -143,12 +167,13 @@ class TestGetAllRecipes:
     async def test_get_all_recipes_escapes_regex_metacharacters_in_cuisine(self, mock_get_collection):
         mock_collection = MagicMock()
         mock_collection.find.return_value = _AsyncCursorStub([])
+        mock_collection.count_documents = AsyncMock(return_value=0)
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
         # A classic catastrophic-backtracking pattern; if passed through to
         # $regex unescaped, this can pin a CPU core evaluating it per document.
-        await get_all_recipes(cuisine="(a+)+$")
+        await get_all_recipes(cuisine="(a+)+$", limit=20, skip=0)
 
         called_filter = mock_collection.find.call_args[0][0]
         assert called_filter["cuisine"]["$regex"] == "\\(a\\+\\)\\+\\$"
@@ -157,10 +182,11 @@ class TestGetAllRecipes:
     async def test_get_all_recipes_applies_min_rating_filter(self, mock_get_collection):
         mock_collection = MagicMock()
         mock_collection.find.return_value = _AsyncCursorStub([])
+        mock_collection.count_documents = AsyncMock(return_value=0)
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        await get_all_recipes(cuisine=None, min_rating=4.0)
+        await get_all_recipes(cuisine=None, min_rating=4.0, limit=20, skip=0)
 
         called_filter = mock_collection.find.call_args[0][0]
         assert called_filter["averageRating"] == {"$gte": 4.0}
@@ -711,11 +737,26 @@ class TestSearchRecipes:
         # Explicit defaults: calling the handler directly bypasses FastAPI's
         # request handling, so unset Query(...) params keep the raw Query
         # object as their Python-level default rather than being resolved.
-        result = await search_recipes(description="garlic", search_operator="must")
+        result = await search_recipes(description="garlic", search_operator="must", limit=20, skip=0)
 
         assert result.success is True
         assert result.data.totalCount == 1
         assert result.data.recipes[0].title == "Garlic Pasta"
+
+    @patch('src.routers.recipes.execute_aggregation')
+    async def test_search_recipes_includes_pagination_metadata(self, mock_execute_aggregation):
+        mock_execute_aggregation.return_value = [{
+            "totalCount": [{"count": 45}],
+            "results": [{"_id": ObjectId(TEST_RECIPE_ID), "title": "Garlic Pasta", "description": "Garlicky and rich"}]
+        }]
+
+        from src.routers.recipes import search_recipes
+        result = await search_recipes(description="garlic", search_operator="must", limit=20, skip=0)
+
+        assert result.pagination.page == 1
+        assert result.pagination.limit == 20
+        assert result.pagination.total == 45
+        assert result.pagination.pages == 3
 
     async def test_search_recipes_missing_params(self):
         from src.routers.recipes import search_recipes
@@ -740,11 +781,13 @@ class TestSearchRecipes:
         mock_execute_aggregation.return_value = []
 
         from src.routers.recipes import search_recipes
-        result = await search_recipes(description="nonexistent", search_operator="must")
+        result = await search_recipes(description="nonexistent", search_operator="must", limit=20, skip=0)
 
         assert result.success is True
         assert result.data.totalCount == 0
         assert result.data.recipes == []
+        assert result.pagination.total == 0
+        assert result.pagination.pages == 0
 
 
 from src.utils.exceptions import VoyageAuthError, VoyageAPIError
