@@ -1,5 +1,7 @@
 # Foodies API
 
+[![CI](https://github.com/iannyFARUE/foodies/actions/workflows/ci.yml/badge.svg)](https://github.com/iannyFARUE/foodies/actions/workflows/ci.yml)
+
 A FastAPI + MongoDB backend for browsing recipes and reviews, built as a learning
 project mirroring the architecture of MongoDB's `sample-app-python-mflix`:
 CRUD, filtering/pagination, batch operations, aggregations ($group, $unwind,
@@ -60,6 +62,9 @@ pytest -m unit -v          # fast, mocked, no database required
 pytest -m integration -v   # requires the Atlas cluster from .env (spins up a real server on port 8011)
 pytest -v                  # everything
 ```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the unit suite on every push/PR to `main`. Integration
+tests need a live Atlas cluster and aren't run in CI.
 
 ## Project structure
 
