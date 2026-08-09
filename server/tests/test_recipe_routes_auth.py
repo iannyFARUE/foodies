@@ -17,6 +17,7 @@ from src.utils.exceptions import APIKeyError
 from src.utils.errorResponse import create_error_response
 
 TEST_RECIPE_ID = "507f1f77bcf86cd799439011"
+TEST_REVIEW_ID = "507f1f77bcf86cd799439099"
 
 
 def make_client():
@@ -89,5 +90,55 @@ class TestMutatingRoutesRequireApiKey:
         client = make_client()
 
         response = client.get(f"/api/recipes/{TEST_RECIPE_ID}")
+
+        assert response.status_code == 200
+
+    @patch('src.routers.recipes.get_collection')
+    def test_delete_review_without_api_key_is_rejected(self, mock_get_collection, monkeypatch):
+        monkeypatch.setenv("API_KEY", "secret-key")
+        mock_get_collection.return_value = AsyncMock()
+        client = make_client()
+
+        response = client.delete(f"/api/recipes/{TEST_RECIPE_ID}/reviews/{TEST_REVIEW_ID}")
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "INVALID_API_KEY"
+        mock_get_collection.return_value.delete_one.assert_not_called()
+
+    @patch('src.routers.recipes.get_collection')
+    def test_update_review_without_api_key_is_rejected(self, mock_get_collection, monkeypatch):
+        monkeypatch.setenv("API_KEY", "secret-key")
+        mock_get_collection.return_value = AsyncMock()
+        client = make_client()
+
+        response = client.patch(
+            f"/api/recipes/{TEST_RECIPE_ID}/reviews/{TEST_REVIEW_ID}",
+            json={"rating": 3}
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "INVALID_API_KEY"
+        mock_get_collection.return_value.update_one.assert_not_called()
+
+    @patch('src.routers.recipes.get_collection')
+    def test_get_recipe_reviews_does_not_require_api_key(self, mock_get_collection, monkeypatch):
+        monkeypatch.setenv("API_KEY", "secret-key")
+
+        class _EmptyCursor:
+            def sort(self, *a, **k): return self
+            def skip(self, *a, **k): return self
+            def limit(self, *a, **k): return self
+            def __aiter__(self): return self
+            async def __anext__(self): raise StopAsyncIteration
+
+        mock_recipes = AsyncMock()
+        mock_recipes.find_one.return_value = {"_id": ObjectId(TEST_RECIPE_ID), "title": "Test"}
+        mock_reviews = MagicMock()
+        mock_reviews.count_documents = AsyncMock(return_value=0)
+        mock_reviews.find.return_value = _EmptyCursor()
+        mock_get_collection.side_effect = lambda name: mock_recipes if name == "recipes" else mock_reviews
+        client = make_client()
+
+        response = client.get(f"/api/recipes/{TEST_RECIPE_ID}/reviews")
 
         assert response.status_code == 200

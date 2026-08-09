@@ -86,6 +86,11 @@ class CreateReviewRequest(BaseModel):
     comment: Optional[str] = None
 
 
+class UpdateReviewRequest(BaseModel):
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
+    comment: Optional[str] = None
+
+
 class VectorSearchResult(BaseModel):
     id: Optional[str] = Field(alias="_id")
     title: str

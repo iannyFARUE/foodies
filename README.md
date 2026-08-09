@@ -84,8 +84,16 @@ server/
 ## Design notes
 
 - **Denormalized ratings:** each recipe stores `averageRating`/`reviewCount`,
-  recomputed whenever a review is added. This lets `GET /api/recipes/` filter
-  by `minRating` directly, without a `$lookup` on every list request.
+  recomputed whenever a review is created, updated, or deleted (via a shared
+  `recompute_recipe_rating_stats` helper). This lets `GET /api/recipes/` filter
+  by `minRating` directly, without a `$lookup` on every list request. Deleting
+  a recipe's last review resets `averageRating` to `null`/`reviewCount` to `0`
+  rather than leaving stale values.
+- **Review management:** `GET /api/recipes/{id}/reviews` lists a recipe's
+  reviews (paginated); `PATCH`/`DELETE /api/recipes/{id}/reviews/{review_id}`
+  edit or remove a single review. All three complement the existing
+  `POST .../reviews` (create) and `GET .../aggregations/recentReviews`
+  (cross-recipe recent-reviews view).
 - **Pagination metadata:** `GET /api/recipes/` and `/search` still take
   `skip`/`limit`, but responses now include a `pagination` object
   (`page`/`limit`/`total`/`pages`) computed from a `count_documents`/`$facet`

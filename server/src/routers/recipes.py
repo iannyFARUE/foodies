@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query, Path, Body, Depends
 from fastapi.responses import JSONResponse
 from typing import List, Optional
 from src.database.mongo_client import get_collection, voyage_ai_available
-from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, CreateReviewRequest, SearchRecipesResponse, VectorSearchResult, SuccessResponse
+from src.models.models import Recipe, CreateRecipeRequest, UpdateRecipeRequest, Review, CreateReviewRequest, UpdateReviewRequest, SearchRecipesResponse, VectorSearchResult, SuccessResponse
 from src.utils.successResponse import create_success_response
 from src.utils.errorResponse import create_error_response, server_error_response
 from src.utils.exceptions import VoyageAuthError, VoyageAPIError
@@ -659,6 +659,69 @@ async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
     return create_success_response({"deletedCount": result.deleted_count}, f"Delete operation completed. Removed {result.deleted_count} recipes.")
 
 
+@router.get(
+    "/{id}/reviews",
+    response_model=SuccessResponse[List[Review]],
+    status_code=200,
+    summary="List reviews for a recipe.",
+    responses=OBJECTID_VALIDATION_RESPONSES
+)
+async def get_recipe_reviews(
+    id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+):
+    try:
+        recipe_object_id = ObjectId(id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"The provided ID '{id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    recipes_collection = get_collection("recipes")
+    reviews_collection = get_collection("reviews")
+
+    try:
+        recipe = await recipes_collection.find_one({"_id": recipe_object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="get_recipe_reviews_lookup_recipe",
+        )
+
+    if recipe is None:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No recipe found with ID: {id}",
+                code="RECIPE_NOT_FOUND"
+            )
+        )
+
+    try:
+        total = await reviews_collection.count_documents({"recipe_id": recipe_object_id})
+        cursor = reviews_collection.find({"recipe_id": recipe_object_id}).sort([("date", -1)]).skip(skip).limit(limit)
+        reviews = []
+        async for review in cursor:
+            review["_id"] = str(review["_id"])
+            review["recipe_id"] = str(review["recipe_id"])
+            reviews.append(review)
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="get_recipe_reviews",
+        )
+
+    pagination = build_pagination(skip=skip, limit=limit, total=total)
+    return create_success_response(reviews, f"Found {len(reviews)} reviews.", pagination=pagination)
+
+
 @router.post(
     "/{id}/reviews",
     status_code=201,
@@ -712,29 +775,120 @@ async def create_review(id: str, review: CreateReviewRequest):
             log_context="create_review_insert",
         )
 
-    # Recompute the recipe's denormalized averageRating/reviewCount so that
-    # GET /api/recipes/ can filter by minRating without a $lookup on every read.
-    stats_pipeline = [
-        {"$match": {"recipe_id": recipe_object_id}},
-        {"$group": {"_id": None, "averageRating": {"$avg": "$rating"}, "reviewCount": {"$sum": 1}}}
-    ]
-    stats_cursor = await reviews_collection.aggregate(stats_pipeline)
-    stats = await stats_cursor.to_list(length=None)
-
-    if stats:
-        await recipes_collection.update_one(
-            {"_id": recipe_object_id},
-            {"$set": {
-                "averageRating": round(stats[0]["averageRating"], 2),
-                "reviewCount": stats[0]["reviewCount"]
-            }}
-        )
+    await recompute_recipe_rating_stats(recipe_object_id)
 
     created_review = await reviews_collection.find_one({"_id": result.inserted_id})
     created_review["_id"] = str(created_review["_id"])
     created_review["recipe_id"] = str(created_review["recipe_id"])
 
     return create_success_response(created_review, "Review added successfully")
+
+
+@router.delete(
+    "/{id}/reviews/{review_id}",
+    response_model=SuccessResponse[dict],
+    status_code=200,
+    summary="Delete a single review from a recipe.",
+    responses=OBJECTID_VALIDATION_RESPONSES,
+    dependencies=[Depends(require_api_key)]
+)
+async def delete_review(id: str, review_id: str):
+    try:
+        recipe_object_id = ObjectId(id)
+        review_object_id = ObjectId(review_id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"The provided recipe ID '{id}' or review ID '{review_id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    reviews_collection = get_collection("reviews")
+    try:
+        result = await reviews_collection.delete_one({"_id": review_object_id, "recipe_id": recipe_object_id})
+    except Exception:
+        return server_error_response(
+            "Database error occurred.",
+            "DATABASE_ERROR",
+            log_context="delete_review",
+        )
+
+    if result.deleted_count == 0:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No review found with ID: {review_id} for recipe: {id}",
+                code="REVIEW_NOT_FOUND"
+            )
+        )
+
+    await recompute_recipe_rating_stats(recipe_object_id)
+
+    return create_success_response({"deletedCount": result.deleted_count}, "Review deleted successfully")
+
+
+@router.patch(
+    "/{id}/reviews/{review_id}",
+    response_model=SuccessResponse[Review],
+    status_code=200,
+    summary="Update a single review.",
+    responses=CRUD_WITH_OBJECTID_RESPONSES,
+    dependencies=[Depends(require_api_key)]
+)
+async def update_review(review_data: UpdateReviewRequest, id: str, review_id: str):
+    try:
+        recipe_object_id = ObjectId(id)
+        review_object_id = ObjectId(review_id)
+    except errors.InvalidId:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"The provided recipe ID '{id}' or review ID '{review_id}' is not a valid ObjectId",
+                code="INVALID_OBJECT_ID"
+            )
+        )
+
+    update_dict = review_data.model_dump(exclude_unset=True, exclude_none=True)
+    if not update_dict:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message="No valid fields provided for update.",
+                code="NO_UPDATE_DATA"
+            )
+        )
+
+    reviews_collection = get_collection("reviews")
+    try:
+        result = await reviews_collection.update_one(
+            {"_id": review_object_id, "recipe_id": recipe_object_id},
+            {"$set": update_dict}
+        )
+    except Exception:
+        return server_error_response(
+            "An error occurred while updating the review.",
+            "DATABASE_ERROR",
+            log_context="update_review",
+        )
+
+    if result.matched_count == 0:
+        return JSONResponse(
+            status_code=404,
+            content=create_error_response(
+                message=f"No review found with ID: {review_id} for recipe: {id}",
+                code="REVIEW_NOT_FOUND"
+            )
+        )
+
+    if "rating" in update_dict:
+        await recompute_recipe_rating_stats(recipe_object_id)
+
+    updated_review = await reviews_collection.find_one({"_id": review_object_id})
+    updated_review["_id"] = str(updated_review["_id"])
+    updated_review["recipe_id"] = str(updated_review["recipe_id"])
+    return create_success_response(updated_review, "Review updated successfully")
 
 
 @router.get(
@@ -879,6 +1033,37 @@ async def aggregate_recipes_recent_reviews(
 #------------------------------------
 # Helper Functions
 #------------------------------------
+
+async def recompute_recipe_rating_stats(recipe_object_id: ObjectId) -> None:
+    """
+    Recompute a recipe's denormalized averageRating/reviewCount from its
+    reviews. Called after a review is created, updated, or deleted so
+    GET /api/recipes/ can keep filtering by minRating without a $lookup.
+    """
+    recipes_collection = get_collection("recipes")
+    reviews_collection = get_collection("reviews")
+
+    stats_pipeline = [
+        {"$match": {"recipe_id": recipe_object_id}},
+        {"$group": {"_id": None, "averageRating": {"$avg": "$rating"}, "reviewCount": {"$sum": 1}}}
+    ]
+    stats_cursor = await reviews_collection.aggregate(stats_pipeline)
+    stats = await stats_cursor.to_list(length=None)
+
+    if stats:
+        await recipes_collection.update_one(
+            {"_id": recipe_object_id},
+            {"$set": {
+                "averageRating": round(stats[0]["averageRating"], 2),
+                "reviewCount": stats[0]["reviewCount"]
+            }}
+        )
+    else:
+        await recipes_collection.update_one(
+            {"_id": recipe_object_id},
+            {"$set": {"averageRating": None, "reviewCount": 0}}
+        )
+
 
 async def execute_aggregation(pipeline: list) -> list:
     """Run an aggregation pipeline against the recipes collection and collect all results."""
