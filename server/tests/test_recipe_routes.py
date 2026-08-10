@@ -122,7 +122,7 @@ class TestGetAllRecipes:
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        result = await get_all_recipes(cuisine=None, limit=20, skip=0)
+        result = await get_all_recipes(cuisine=None, limit=20, skip=0, sort_by="title")
 
         assert result.success is True
         assert len(result.data) == 2
@@ -141,7 +141,7 @@ class TestGetAllRecipes:
 
         from src.routers.recipes import get_all_recipes
         result = await get_all_recipes(
-            cuisine=None, difficulty=None, max_prep_time=None, min_rating=None, limit=20, skip=0
+            cuisine=None, difficulty=None, max_prep_time=None, min_rating=None, limit=20, skip=0, sort_by="title"
         )
 
         assert result.pagination.page == 1
@@ -158,7 +158,7 @@ class TestGetAllRecipes:
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        await get_all_recipes(cuisine="Italian", limit=20, skip=0)
+        await get_all_recipes(cuisine="Italian", limit=20, skip=0, sort_by="title")
 
         called_filter = mock_collection.find.call_args[0][0]
         assert called_filter["cuisine"] == {"$regex": "Italian", "$options": "i"}
@@ -173,7 +173,7 @@ class TestGetAllRecipes:
         from src.routers.recipes import get_all_recipes
         # A classic catastrophic-backtracking pattern; if passed through to
         # $regex unescaped, this can pin a CPU core evaluating it per document.
-        await get_all_recipes(cuisine="(a+)+$", limit=20, skip=0)
+        await get_all_recipes(cuisine="(a+)+$", limit=20, skip=0, sort_by="title")
 
         called_filter = mock_collection.find.call_args[0][0]
         assert called_filter["cuisine"]["$regex"] == "\\(a\\+\\)\\+\\$"
@@ -186,7 +186,7 @@ class TestGetAllRecipes:
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        await get_all_recipes(cuisine=None, min_rating=4.0, limit=20, skip=0)
+        await get_all_recipes(cuisine=None, min_rating=4.0, limit=20, skip=0, sort_by="title")
 
         called_filter = mock_collection.find.call_args[0][0]
         assert called_filter["averageRating"] == {"$gte": 4.0}
@@ -198,12 +198,21 @@ class TestGetAllRecipes:
         mock_get_collection.return_value = mock_collection
 
         from src.routers.recipes import get_all_recipes
-        response = await get_all_recipes(cuisine=None)
+        response = await get_all_recipes(cuisine=None, limit=20, skip=0, sort_by="title")
 
         assert isinstance(response, JSONResponse)
         assert response.status_code == 500
         body = json.loads(response.body.decode())
         assert body["error"]["code"] == "DATABASE_ERROR"
+
+    async def test_get_all_recipes_rejects_invalid_sort_field(self):
+        from src.routers.recipes import get_all_recipes
+        response = await get_all_recipes(cuisine=None, limit=20, skip=0, sort_by="$where")
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        body = json.loads(response.body.decode())
+        assert body["error"]["code"] == "INVALID_SORT_FIELD"
 
 
 from src.models.models import CreateRecipeRequest

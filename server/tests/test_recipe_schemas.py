@@ -46,6 +46,30 @@ class TestRecipeCreateValidation:
         assert recipe.cuisine is None
         assert recipe.ingredients is None
 
+    def test_create_recipe_rejects_empty_title(self):
+        with pytest.raises(ValidationError) as exc_info:
+            CreateRecipeRequest(**{"title": ""})
+        errors = exc_info.value.errors()
+        assert any(error["loc"] == ("title",) for error in errors)
+
+    def test_create_recipe_rejects_negative_prep_time(self):
+        with pytest.raises(ValidationError) as exc_info:
+            CreateRecipeRequest(**{"title": "Test Recipe", "prepTimeMinutes": -5})
+        errors = exc_info.value.errors()
+        assert any(error["loc"] == ("prepTimeMinutes",) for error in errors)
+
+    def test_create_recipe_rejects_negative_cook_time(self):
+        with pytest.raises(ValidationError) as exc_info:
+            CreateRecipeRequest(**{"title": "Test Recipe", "cookTimeMinutes": -1})
+        errors = exc_info.value.errors()
+        assert any(error["loc"] == ("cookTimeMinutes",) for error in errors)
+
+    def test_create_recipe_rejects_zero_servings(self):
+        with pytest.raises(ValidationError) as exc_info:
+            CreateRecipeRequest(**{"title": "Test Recipe", "servings": 0})
+        errors = exc_info.value.errors()
+        assert any(error["loc"] == ("servings",) for error in errors)
+
 
 @pytest.mark.unit
 class TestRecipeUpdateValidation:
@@ -65,6 +89,18 @@ class TestRecipeUpdateValidation:
         recipe_update = UpdateRecipeRequest(**{})
         assert recipe_update.title is None
         assert recipe_update.difficulty is None
+
+    def test_update_recipe_rejects_empty_title(self):
+        with pytest.raises(ValidationError) as exc_info:
+            UpdateRecipeRequest(**{"title": ""})
+        errors = exc_info.value.errors()
+        assert any(error["loc"] == ("title",) for error in errors)
+
+    def test_update_recipe_rejects_negative_servings(self):
+        with pytest.raises(ValidationError) as exc_info:
+            UpdateRecipeRequest(**{"servings": -1})
+        errors = exc_info.value.errors()
+        assert any(error["loc"] == ("servings",) for error in errors)
 
 
 @pytest.mark.unit

@@ -27,10 +27,10 @@ from bson import ObjectId, errors
 
 router = APIRouter()
 
-# Fields clients may reference in batch filter/update request bodies. Filters may
-# target any real recipe field; updates exclude server-managed fields
+# Every real recipe field name, used to validate batch filters and sortBy.
+# Batch updates use a narrower set that excludes server-managed fields
 # (averageRating/reviewCount are recomputed from reviews, not client-writable).
-BATCH_FILTER_ALLOWED_FIELDS = set(Recipe.model_fields.keys()) - {"id"}
+RECIPE_FIELD_NAMES = set(Recipe.model_fields.keys()) - {"id"}
 BATCH_UPDATE_ALLOWED_FIELDS = set(UpdateRecipeRequest.model_fields.keys())
 
 # /vector-search calls the paid Voyage AI embeddings API per request, so it's
@@ -310,6 +310,15 @@ async def get_all_recipes(
     sort_by: str = Query(default="title", alias="sortBy"),
     sort_order: str = Query(default="asc", alias="sortOrder")
 ):
+    if sort_by not in RECIPE_FIELD_NAMES:
+        return JSONResponse(
+            status_code=400,
+            content=create_error_response(
+                message=f"Invalid sort field '{sort_by}'. Must be one of: {sorted(RECIPE_FIELD_NAMES)}",
+                code="INVALID_SORT_FIELD"
+            )
+        )
+
     recipes_collection = get_collection("recipes")
     filter_dict = {}
     if cuisine:
@@ -505,7 +514,7 @@ async def update_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
             )
         )
 
-    filter_error = validate_recipe_filter(filter_data, BATCH_FILTER_ALLOWED_FIELDS)
+    filter_error = validate_recipe_filter(filter_data, RECIPE_FIELD_NAMES)
     if filter_error:
         return JSONResponse(
             status_code=400,
@@ -640,7 +649,7 @@ async def delete_recipes_batch(request_body: dict = Body(...)) -> SuccessRespons
             )
         )
 
-    filter_error = validate_recipe_filter(filter_data, BATCH_FILTER_ALLOWED_FIELDS)
+    filter_error = validate_recipe_filter(filter_data, RECIPE_FIELD_NAMES)
     if filter_error:
         return JSONResponse(
             status_code=400,

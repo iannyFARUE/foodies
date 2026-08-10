@@ -98,6 +98,11 @@ server/
   `skip`/`limit`, but responses now include a `pagination` object
   (`page`/`limit`/`total`/`pages`) computed from a `count_documents`/`$facet`
   total, so clients can tell whether more pages exist.
+- **Input validation:** `title` can't be empty, `prepTimeMinutes`/
+  `cookTimeMinutes` can't be negative, and `servings` must be at least 1 (on
+  both create and update). `GET /api/recipes/?sortBy=` is checked against the
+  recipe's real field names and rejected with `400 INVALID_SORT_FIELD`
+  otherwise, rather than silently sorting on a field MongoDB ignores.
 - **Embeddings live on the recipe itself** (`description_embedding_voyage_3_large`),
   unlike the reference project's separate `embedded_movies` collection — there's
   no reason to split it out since every recipe gets exactly one embedding.

@@ -27,27 +27,27 @@ class Recipe(BaseModel):
 
 
 class CreateRecipeRequest(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1)
     description: Optional[str] = None
     instructions: Optional[str] = None
     cuisine: Optional[str] = None
     difficulty: Optional[str] = None
-    prepTimeMinutes: Optional[int] = None
-    cookTimeMinutes: Optional[int] = None
-    servings: Optional[int] = None
+    prepTimeMinutes: Optional[int] = Field(default=None, ge=0)
+    cookTimeMinutes: Optional[int] = Field(default=None, ge=0)
+    servings: Optional[int] = Field(default=None, ge=1)
     ingredients: Optional[list[str]] = None
     tags: Optional[list[str]] = None
 
 
 class UpdateRecipeRequest(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(default=None, min_length=1)
     description: Optional[str] = None
     instructions: Optional[str] = None
     cuisine: Optional[str] = None
     difficulty: Optional[str] = None
-    prepTimeMinutes: Optional[int] = None
-    cookTimeMinutes: Optional[int] = None
-    servings: Optional[int] = None
+    prepTimeMinutes: Optional[int] = Field(default=None, ge=0)
+    cookTimeMinutes: Optional[int] = Field(default=None, ge=0)
+    servings: Optional[int] = Field(default=None, ge=1)
     ingredients: Optional[list[str]] = None
     tags: Optional[list[str]] = None
 
